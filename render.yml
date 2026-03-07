@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: real-wealthy-
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: MONGODB_URI
+        value: mongodb+srv://loismotion6_db_user:ugTKBAiJ2eZRGtUc@rawwealthy.tf616kg.mongodb.net/raw_wealthy_prod?retryWrites=true&w=majority&appName=rawwealthy
+      - key: JWT_SECRET
+        generateValue: true
+      - key: ADMIN_EMAIL
+        value: admin@rawwealthty.com
+      - key: ADMIN_P
+      - key: NODE_ENV
+      - key: ADMIN_URL
+      - value: https://uuuuu-rawwealthy.vercel.app/
+        value: production
+      - key: CLIENT_U
+        value: 
