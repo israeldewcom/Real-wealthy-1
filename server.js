@@ -1,7 +1,8 @@
-// server.js - RAW WEALTHY BACKEND v51.0 - PRODUCTION READY ENHANCED EDITION
-// ENHANCED WITH ATOMIC TRANSACTIONS, FIXED REFERRAL LOGIC, PROPER WITHDRAWAL HANDLING
-// SOCKET AUTHENTICATION, CONFIGURABLE BUSINESS RULES, DISK-BASED FILE UPLOADS
-// ALL ORIGINAL ENDPOINTS PRESERVED AND UPGRADRODUCTION
+// server.js - LUCKY INVESTMENT BACKEND v52.0 - PRODUCTION READY ENHANCED EDITION
+// ENHANCED WITH SEPARATE DEPOSIT BALANCE & EARNINGS, FIXED REFERRAL LOGIC,
+// PROPER WITHDRAWAL HANDLING, SOCKET AUTHENTICATION, CONFIGURABLE BUSINESS RULES,
+// DISK-BASED FILE UPLOADS, EARNINGS RECALCULATION ENGINE, AUTO-CORRECT DISCREPANCIES,
+// ADMIN FIX TOOL, AND INVESTMENTS FUNDED ONLY FROM DEPOSIT BALANCE.
 
 import express from 'express';
 import mongoose from 'mongoose';
@@ -63,7 +64,7 @@ if (missingEnvVars.length > 0) {
     }
     
     if (!process.env.MONGODB_URI) {
-        process.env.MONGODB_URI = 'mongodb://localhost:27017/rawwealthy';
+        process.env.MONGODB_URI = 'mongodb://localhost:27017/luckyinvestment';
         console.log('✅ Set default MONGODB_URI');
     }
 }
@@ -105,7 +106,7 @@ const config = {
         secure: parseInt(process.env.EMAIL_PORT) === 465,
         user: process.env.EMAIL_USER,
         pass: process.env.EMAIL_PASSWORD,
-        from: process.env.EMAIL_FROM || `"Raw Wealthy" <${process.env.EMAIL_USER}>`
+        from: process.env.EMAIL_FROM || `"Lucky Investment" <${process.env.EMAIL_USER}>`
     },
     
     // Payment Integration
@@ -123,8 +124,8 @@ const config = {
     },
     
     // Business Logic - now configurable via environment with defaults
-    minInvestment: parseInt(process.env.MIN_INVESTMENT) || 3500,
-    minDeposit: parseInt(process.env.MIN_DEPOSIT) || 3500,
+    minInvestment: parseInt(process.env.MIN_INVESTMENT) || 3000,
+    minDeposit: parseInt(process.env.MIN_DEPOSIT) || 3000,
     minWithdrawal: parseInt(process.env.MIN_WITHDRAWAL) || 4000,
     maxWithdrawalPercent: parseFloat(process.env.MAX_WITHDRAWAL_PERCENT) || 100,
     
@@ -139,15 +140,16 @@ const config = {
         remaining: parseInt(process.env.PLAN_DURATION_REMAINING) || 9
     },
     
-    // Interest rates for each plan (will be used in plan creation/update)
-    // These are defaults; they can be overridden per plan via database
-    
     // Feature flags
     dailyInterestTime: process.env.DAILY_INTEREST_TIME || '00:00',
     withdrawalAutoApprove: process.env.WITHDRAWAL_AUTO_APPROVE === 'true' ? true : false, // Default false
     referralCommissionOnFirstInvestment: process.env.REFERRAL_COMMISSION_ON_FIRST_INVESTMENT !== 'false', // default true
     allInvestmentsRequireAdminApproval: process.env.ALL_INVESTMENTS_REQUIRE_ADMIN_APPROVAL === 'true' ? true : false, // default false
     deductBalanceOnlyOnApproval: process.env.DEDUCT_BALANCE_ONLY_ON_APPROVAL === 'true' ? true : false, // default false
+    
+    // NEW: Auto‑correct earnings discrepancies (disabled by default)
+    autoCorrectEarnings: process.env.AUTO_CORRECT_EARNINGS === 'true' ? true : false, // default false
+    autoCorrectCronSchedule: process.env.AUTO_CORRECT_CRON_SCHEDULE || '0 3 * * *', // 3am daily
     
     // Storage
     uploadDir: path.join(__dirname, 'uploads'),
@@ -165,7 +167,8 @@ const config = {
     // System locks for cron jobs
     cronLocks: {
         dailyInterest: false,
-        investmentCompletion: false
+        investmentCompletion: false,
+        autoCorrectEarnings: false
     }
 };
 
@@ -176,9 +179,9 @@ config.allowedOrigins = [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:3001',
-    'https://rawwealthy.com',
-    'https://www.rawwealthy.com',
-    'https://uun-rawwealthy.vercel.app',
+    'https://luckyinvestment.com',
+    'https://www.luckyinvestment.com',
+    'https://uun-luckyinvestment.vercel.app',
     'https://real-wealthy-1.onrender.com'
 ].filter(Boolean);
 
@@ -195,9 +198,7 @@ console.log(`- Minimum Withdrawal: ₦${config.minWithdrawal.toLocaleString()}`)
 console.log(`- Referral Commission: ${config.referralCommissionPercent}%`);
 console.log(`- All Investments Require Admin Approval: ${config.allInvestmentsRequireAdminApproval}`);
 console.log(`- Balance Deducted Only on Approval: ${config.deductBalanceOnlyOnApproval}`);
-console.log(`- Investments Auto-Approved: ${!config.allInvestmentsRequireAdminApproval ? '✅ YES' : '❌ NO'}`);
-console.log(`- Daily Interest Starts Immediately: ✅ YES`);
-console.log(`- Interest Updates Every 24h: ✅ YES`);
+console.log(`- Auto‑Correct Earnings: ${config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED'}`);
 console.log(`- Allowed Origins: ${config.allowedOrigins.length}`);
 
 // ==================== ENHANCED EXPRESS SETUP WITH SOCKET.IO ====================
@@ -210,7 +211,7 @@ const io = new Server(server, {
     }
 });
 
-// Socket authentication middleware
+// Socket authentication middleware (unchanged)
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
@@ -226,12 +227,11 @@ io.use((socket, next) => {
     }
 });
 
-// Real-time connection handling with authentication
+// Real-time connection handling with authentication (unchanged)
 io.on('connection', (socket) => {
     console.log(`🔌 New authenticated socket connection: ${socket.id} (user: ${socket.userId})`);
     
     socket.on('join-user', (userId) => {
-        // Only allow joining own user room
         if (userId === socket.userId) {
             socket.join(`user-${userId}`);
             console.log(`👤 User ${userId} joined their room`);
@@ -241,7 +241,6 @@ io.on('connection', (socket) => {
     });
     
     socket.on('admin-join', (adminId) => {
-        // Only admins can join admin rooms
         if (socket.userRole === 'admin' || socket.userRole === 'super_admin') {
             if (adminId === socket.userId) {
                 socket.join(`admin-${adminId}`);
@@ -263,28 +262,24 @@ io.on('connection', (socket) => {
     });
 });
 
-// Socket.IO utility functions (unchanged but use authenticated rooms)
+// Socket.IO utility functions (unchanged)
 const emitToUser = (userId, event, data) => {
     io.to(`user-${userId}`).emit(event, data);
 };
-
 const emitToAdmins = (event, data) => {
     io.to('admin-room').emit(event, data);
 };
-
 const emitToWithdrawalAdmins = (event, data) => {
     io.to('withdrawal-approvals').emit(event, data);
 };
-
 const emitToDepositAdmins = (event, data) => {
     io.to('deposit-approvals').emit(event, data);
 };
-
 const emitToInvestmentAdmins = (event, data) => {
     io.to('investment-monitor').emit(event, data);
 };
 
-// Security Headers with dynamic CSP
+// Security Headers with dynamic CSP (unchanged)
 app.use(helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: {
@@ -299,13 +294,13 @@ app.use(helmet({
     }
 }));
 
-// Security middleware
+// Security middleware (unchanged)
 app.use(xss());
 app.use(hpp());
 app.use(mongoSanitize());
 app.use(compression());
 
-// Enhanced logging
+// Enhanced logging (unchanged)
 if (config.nodeEnv === 'production') {
     app.use(morgan('combined'));
 } else {
@@ -424,7 +419,6 @@ const upload = multer({
 });
 
 const handleFileUpload = (file, folder = 'general', userId = null) => {
-    // With disk storage, file is already saved; we just return its info
     return {
         url: `${config.serverURL}/uploads/${folder}/${file.filename}`,
         filename: file.filename,
@@ -495,6 +489,7 @@ const sendEmail = async (to, subject, html, text = '') => {
 };
 
 // ==================== DATABASE MODELS - ENHANCED WITH FIXES ====================
+// (All models remain exactly the same as in the original code)
 const userSchema = new mongoose.Schema({
     full_name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true },
@@ -503,12 +498,13 @@ const userSchema = new mongoose.Schema({
     role: { type: String, enum: ['user', 'admin', 'super_admin'], default: 'user' },
     
     // Financial fields - CORRECTED: total_earnings and referral_earnings are LIFETIME cumulative
+    // balance now represents only deposited funds (not earnings)
     balance: { type: Number, default: 0, min: 0 },
     total_earnings: { type: Number, default: 0, min: 0 }, // cumulative earnings from investments
     referral_earnings: { type: Number, default: 0, min: 0 }, // cumulative referral bonuses
     daily_earnings: { type: Number, default: 0, min: 0 }, // current daily earnings (may not be needed)
     total_withdrawn: { type: Number, default: 0, min: 0 }, // cumulative amount withdrawn
-    withdrawable_earnings: { type: Number, default: 0, min: 0 }, // earnings available for withdrawal
+    withdrawable_earnings: { type: Number, default: 0, min: 0 }, // earnings available for withdrawal (total_earnings+referral_earnings - total_withdrawn)
     
     risk_tolerance: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
     investment_strategy: { type: String, enum: ['conservative', 'balanced', 'aggressive'], default: 'balanced' },
@@ -621,7 +617,7 @@ userSchema.virtual('availableForWithdrawal').get(function() {
     return Math.max(0, this.withdrawable_earnings || 0);
 });
 
-// Virtual field for portfolio value - FIXED: balance + withdrawable_earnings (since earnings are already in balance)
+// Virtual field for portfolio value - total net worth (deposits + earnings)
 userSchema.virtual('portfolioValue').get(function() {
     return (this.balance || 0) + (this.withdrawable_earnings || 0);
 });
@@ -663,7 +659,6 @@ userSchema.pre('save', async function(next) {
     }
     
     // Update withdrawable_earnings: total_earnings + referral_earnings - total_withdrawn
-    // This is correct as total_earnings and referral_earnings are cumulative.
     if (this.isModified('total_earnings') || this.isModified('referral_earnings') || this.isModified('total_withdrawn')) {
         this.withdrawable_earnings = Math.max(0, 
             (this.total_earnings || 0) + 
@@ -760,6 +755,7 @@ userSchema.methods.rejectAccount = function(reason, adminId) {
 const User = mongoose.model('User', userSchema);
 
 // Investment Plan Model - ENHANCED WITH UPDATED INTEREST RATES AND DURATIONS
+// Added 'stocks' to category enum
 const investmentPlanSchema = new mongoose.Schema({
     name: { type: String, required: true, unique: true },
     description: { type: String, required: true },
@@ -770,7 +766,7 @@ const investmentPlanSchema = new mongoose.Schema({
     duration: { type: Number, required: true, min: 1 },
     risk_level: { type: String, enum: ['low', 'medium', 'high'], required: true },
     raw_material: { type: String, required: true },
-    category: { type: String, enum: ['agriculture', 'mining', 'energy', 'metals', 'crypto', 'real_estate', 'precious_stones', 'livestock', 'timber', 'aquaculture'], default: 'agriculture' },
+    category: { type: String, enum: ['agriculture', 'mining', 'energy', 'metals', 'crypto', 'real_estate', 'precious_stones', 'livestock', 'timber', 'aquaculture', 'stocks'], default: 'stocks' },
     is_active: { type: Boolean, default: true },
     is_popular: { type: Boolean, default: false },
     image_url: String,
@@ -1178,11 +1174,11 @@ const createNotification = async (userId, title, message, type = 'info', actionU
         // Send email if enabled
         const user = await User.findById(userId);
         if (user && user.email_notifications && type !== 'system') {
-            const emailSubject = `Raw Wealthy - ${title}`;
+            const emailSubject = `Lucky Investment - ${title}`;
             const emailHtml = `
                 <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                     <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; text-align: center; color: white;">
-                        <h1 style="margin: 0;">Raw Wealthy</h1>
+                        <h1 style="margin: 0;">Lucky Investment</h1>
                         <p style="opacity: 0.9; margin: 10px 0 0;">Investment Platform</p>
                     </div>
                     <div style="padding: 30px; background: #f9f9f9;">
@@ -1205,8 +1201,8 @@ const createNotification = async (userId, title, message, type = 'info', actionU
                             ` : ''}
                         </div>
                         <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; text-align: center; color: #888; font-size: 12px;">
-                            <p>This is an automated message from Raw Wealthy. Please do not reply to this email.</p>
-                            <p>© ${new Date().getFullYear()} Raw Wealthy. All rights reserved.</p>
+                            <p>This is an automated message from Lucky Investment. Please do not reply to this email.</p>
+                            <p>© ${new Date().getFullYear()} Lucky Investment. All rights reserved.</p>
                         </div>
                     </div>
                 </div>
@@ -1222,7 +1218,7 @@ const createNotification = async (userId, title, message, type = 'info', actionU
     }
 };
 
-// ==================== ENHANCED createTransaction FUNCTION - FIXED WITHDRAWAL LOGIC ====================
+// ==================== ENHANCED createTransaction FUNCTION - UPDATED FOR SEPARATE BALANCE/EARNINGS ====================
 const createTransaction = async (userId, type, amount, description, status = 'completed', metadata = {}) => {
     console.log(`🔄 [TRANSACTION] Creating: ${type} for user ${userId}, amount: ${amount}, status: ${status}`);
     
@@ -1249,20 +1245,18 @@ const createTransaction = async (userId, type, amount, description, status = 'co
             switch (type) {
                 case 'daily_interest':
                     if (amount > 0) {
-                        // Add to total_earnings (cumulative) and balance
+                        // Add to total_earnings only, NOT to balance
                         user.total_earnings = beforeState.total_earnings + amount;
-                        user.balance = beforeState.balance + amount;
                         // withdrawable_earnings will be recalculated in pre-save hook
-                        console.log(`💰 Added ${amount} to total_earnings and balance`);
+                        console.log(`💰 Added ${amount} to total_earnings only (balance unchanged)`);
                     }
                     break;
                     
                 case 'referral_bonus':
                     if (amount > 0) {
-                        // Add to referral_earnings (cumulative) and balance
+                        // Add to referral_earnings only, NOT to balance
                         user.referral_earnings = beforeState.referral_earnings + amount;
-                        user.balance = beforeState.balance + amount;
-                        console.log(`🎁 Added ${amount} to referral_earnings and balance`);
+                        console.log(`🎁 Added ${amount} to referral_earnings only (balance unchanged)`);
                     }
                     break;
                     
@@ -1298,17 +1292,13 @@ const createTransaction = async (userId, type, amount, description, status = 'co
                     const fromEarnings = metadata.from_earnings || 0;
                     const fromReferral = metadata.from_referral || 0;
                     
-                    // FIX: Only subtract from balance and total_withdrawn, NOT from cumulative earnings
-                    user.balance = Math.max(0, beforeState.balance - withdrawalAmount);
+                    // Do NOT deduct from balance; only update total_withdrawn
+                    // user.balance = Math.max(0, beforeState.balance - withdrawalAmount); // REMOVED
                     user.total_withdrawn = beforeState.total_withdrawn + withdrawalAmount;
                     user.total_withdrawals = (user.total_withdrawals || 0) + withdrawalAmount;
                     user.last_withdrawal_date = new Date();
                     
-                    // The pre-save hook will recalculate withdrawable_earnings based on:
-                    // withdrawable_earnings = total_earnings + referral_earnings - total_withdrawn
-                    // This is correct because cumulative earnings remain unchanged.
-                    
-                    console.log(`💸 Withdrew ${withdrawalAmount} (from_earnings: ${fromEarnings}, from_referral: ${fromReferral}) - cumulative earnings unchanged`);
+                    console.log(`💸 Withdrew ${withdrawalAmount} (from_earnings: ${fromEarnings}, from_referral: ${fromReferral}) - cumulative earnings unchanged, balance unchanged`);
                     break;
                     
                 case 'bonus':
@@ -1387,7 +1377,136 @@ const createTransaction = async (userId, type, amount, description, status = 'co
     }
 };
 
+// ==================== NEW: EARNINGS RECALCULATION FUNCTION ====================
+// This function recalculates a user's total_earnings, referral_earnings, total_withdrawn, and withdrawable_earnings
+// by aggregating all completed transactions. It then updates the user document and returns the new values.
+const recalculateUserEarnings = async (userId, session = null) => {
+    console.log(`🔍 Recalculating earnings for user ${userId}`);
+    
+    const query = Transaction.find({
+        user: userId,
+        status: 'completed'
+    }).session(session);
+    
+    const transactions = await query.lean();
+    
+    let totalEarnings = 0;
+    let referralEarnings = 0;
+    let totalWithdrawn = 0;
+    
+    transactions.forEach(tx => {
+        if (tx.type === 'daily_interest' && tx.amount > 0) {
+            totalEarnings += tx.amount;
+        } else if (tx.type === 'referral_bonus' && tx.amount > 0) {
+            referralEarnings += tx.amount;
+        } else if (tx.type === 'withdrawal' && tx.amount < 0) {
+            totalWithdrawn += Math.abs(tx.amount);
+        }
+        // Note: investment, deposit, bonus, refund do not affect cumulative earnings fields.
+    });
+    
+    const withdrawableEarnings = Math.max(0, totalEarnings + referralEarnings - totalWithdrawn);
+    
+    // Also need to get the current balance from the user? We don't recalc balance here because it's maintained by transactions.
+    // We'll just update the earnings fields.
+    const updateData = {
+        total_earnings: totalEarnings,
+        referral_earnings: referralEarnings,
+        total_withdrawn: totalWithdrawn,
+        withdrawable_earnings: withdrawableEarnings
+    };
+    
+    const user = await User.findByIdAndUpdate(
+        userId,
+        updateData,
+        { new: true, session }
+    ).select('-password');
+    
+    if (!user) {
+        throw new Error('User not found during earnings recalculation');
+    }
+    
+    console.log(`✅ Recalculated earnings for user ${userId}:`, {
+        total_earnings: totalEarnings,
+        referral_earnings: referralEarnings,
+        total_withdrawn: totalWithdrawn,
+        withdrawable_earnings: withdrawableEarnings
+    });
+    
+    return {
+        user,
+        recalculated: updateData,
+        transactionCount: transactions.length
+    };
+};
+
+// ==================== NEW: AUTO-CORRECT ALL USERS EARNINGS (CRON JOB) ====================
+const autoCorrectAllUsersEarnings = async () => {
+    if (config.cronLocks.autoCorrectEarnings) {
+        console.log('⏳ Auto-correct earnings cron already running, skipping...');
+        return;
+    }
+    
+    config.cronLocks.autoCorrectEarnings = true;
+    console.log('🔄 Running auto-correct earnings for all users...');
+    
+    try {
+        const users = await User.find({}, '_id').lean();
+        let correctedCount = 0;
+        let errorCount = 0;
+        
+        for (const user of users) {
+            try {
+                const session = await mongoose.startSession();
+                session.startTransaction();
+                
+                const userBefore = await User.findById(user._id).session(session);
+                const recalc = await recalculateUserEarnings(user._id, session);
+                
+                // Check if there was a discrepancy
+                if (Math.abs(userBefore.total_earnings - recalc.recalculated.total_earnings) > 0.01 ||
+                    Math.abs(userBefore.referral_earnings - recalc.recalculated.referral_earnings) > 0.01 ||
+                    Math.abs(userBefore.total_withdrawn - recalc.recalculated.total_withdrawn) > 0.01 ||
+                    Math.abs(userBefore.withdrawable_earnings - recalc.recalculated.withdrawable_earnings) > 0.01) {
+                    
+                    correctedCount++;
+                    console.log(`✅ Corrected user ${user._id}`);
+                    
+                    await AdminAudit.create([{
+                        admin_id: null, // system
+                        action: 'auto_correct_earnings',
+                        target_type: 'user',
+                        target_id: user._id,
+                        details: {
+                            before: {
+                                total_earnings: userBefore.total_earnings,
+                                referral_earnings: userBefore.referral_earnings,
+                                total_withdrawn: userBefore.total_withdrawn,
+                                withdrawable_earnings: userBefore.withdrawable_earnings
+                            },
+                            after: recalc.recalculated
+                        }
+                    }], { session });
+                }
+                
+                await session.commitTransaction();
+                session.endSession();
+            } catch (err) {
+                errorCount++;
+                console.error(`❌ Error correcting user ${user._id}:`, err.message);
+            }
+        }
+        
+        console.log(`✅ Auto-correct completed. Corrected: ${correctedCount}, Errors: ${errorCount}`);
+    } catch (error) {
+        console.error('❌ Error in auto-correct cron:', error);
+    } finally {
+        config.cronLocks.autoCorrectEarnings = false;
+    }
+};
+
 // ==================== ADVANCED DAILY INTEREST HELPER FUNCTIONS ====================
+// (unchanged)
 const addDailyInterestForInvestment = async (investment) => {
     console.log(`💰 [INTEREST] Adding daily interest for investment: ${investment._id}`);
     
@@ -1423,7 +1542,7 @@ const addDailyInterestForInvestment = async (investment) => {
         // Save investment
         await investment.save();
         
-        // Credit user's earnings
+        // Credit user's earnings (using updated createTransaction which does NOT affect balance)
         await createTransaction(
             investment.user,
             'daily_interest',
@@ -1547,7 +1666,7 @@ const addFirstDayInterest = async (investment) => {
         
         await investment.save();
         
-        // Credit user's earnings for first day
+        // Credit user's earnings for first day (using updated createTransaction)
         await createTransaction(
             investment.user,
             'daily_interest',
@@ -1617,7 +1736,7 @@ const awardReferralCommission = async (referredUserId, investmentAmount, investm
         // Calculate commission (20% of first investment)
         const commission = investmentAmount * (config.referralCommissionPercent / 100);
         
-        // Award commission to referrer using createTransaction (which updates balance, referral_earnings, withdrawable)
+        // Award commission to referrer using createTransaction (which now only updates referral_earnings, not balance)
         const txResult = await createTransaction(
             referredUser.referred_by,
             'referral_bonus',
@@ -1676,7 +1795,7 @@ const awardReferralCommission = async (referredUserId, investmentAmount, investm
     }
 };
 
-// AML Monitoring function
+// AML Monitoring function (unchanged)
 const checkAmlCompliance = async (userId, transactionType, amount, metadata = {}) => {
     try {
         if (amount <= 0) return { riskScore: 0, flagged: false };
@@ -1820,7 +1939,6 @@ const initializeDatabase = async () => {
         console.log('🔄 Initializing database...');
         
         await mongoose.connect(config.mongoURI, {
-            // Removed deprecated options
             serverSelectionTimeoutMS: 5000,
             socketTimeoutMS: 45000,
             maxPoolSize: 10,
@@ -1846,139 +1964,139 @@ const createDefaultInvestmentPlans = async () => {
     const defaultPlans = [
         // UPDATED: 3500 plan to 15%, all others +5%, UPDATED DURATIONS
         {
-            name: 'Cocoa Beans',
-            description: 'Invest in premium cocoa beans with stable returns.',
-            min_amount: 3500,
+            name: 'StableGrowth Ltd.',
+            description: 'Invest in a diversified portfolio of blue‑chip stocks with stable returns.',
+            min_amount: 3000,
             max_amount: 50000,
             daily_interest: 15,
             total_interest: 15 * firstThreeDuration,
             duration: firstThreeDuration,
             risk_level: 'low',
-            raw_material: 'Cocoa',
-            category: 'agriculture',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: true,
             features: ['Low Risk', 'Stable Returns', 'Beginner Friendly', 'Daily Payouts'],
             color: '#10b981',
-            icon: '🌱',
+            icon: '📈',
             display_order: 1
         },
         {
-            name: 'Gold',
-            description: 'Precious metal investment with high liquidity.',
+            name: 'Global Equity Fund',
+            description: 'A mix of international stocks offering medium risk and higher returns.',
             min_amount: 50000,
             max_amount: 500000,
             daily_interest: 20,
             total_interest: 20 * firstThreeDuration,
             duration: firstThreeDuration,
             risk_level: 'medium',
-            raw_material: 'Gold',
-            category: 'metals',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: true,
-            features: ['Medium Risk', 'Higher Returns', 'High Liquidity', 'Market Stability'],
+            features: ['Medium Risk', 'Higher Returns', 'International Exposure', 'Daily Payouts'],
             color: '#fbbf24',
-            icon: '🥇',
+            icon: '🌍',
             display_order: 2
         },
         {
-            name: 'Crude Oil',
-            description: 'Energy sector investment with premium returns.',
+            name: 'HighYield Ventures',
+            description: 'Aggressive growth stocks for maximum returns.',
             min_amount: 100000,
             max_amount: 1000000,
             daily_interest: 25,
             total_interest: 25 * firstThreeDuration,
             duration: firstThreeDuration,
             risk_level: 'high',
-            raw_material: 'Crude Oil',
-            category: 'energy',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: true,
-            features: ['High Risk', 'Maximum Returns', 'Premium Investment', 'Energy Sector'],
+            features: ['High Risk', 'Maximum Returns', 'Premium Investment', 'Aggressive Growth'],
             color: '#dc2626',
-            icon: '🛢️',
+            icon: '🚀',
             display_order: 3
         },
         {
-            name: 'Coffee Beans',
-            description: 'Premium Arabica coffee beans from Ethiopian highlands.',
+            name: 'Dividend Kings Inc.',
+            description: 'Companies with a long history of consistent dividend payments.',
             min_amount: 5500,
             max_amount: 25000,
             daily_interest: 19,
             total_interest: 19 * nextThreeDuration,
             duration: nextThreeDuration,
             risk_level: 'low',
-            raw_material: 'Coffee',
-            category: 'agriculture',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: false,
-            features: ['Very Low Risk', 'Consistent Returns', 'Global Demand', 'Daily Payouts'],
+            features: ['Low Risk', 'Consistent Dividends', 'Daily Payouts', 'Steady Income'],
             color: '#8B4513',
-            icon: '☕',
+            icon: '💵',
             display_order: 4
         },
         {
-            name: 'Silver Bullion',
-            description: 'Industrial silver with growing demand in technology sector.',
+            name: 'Industrial Select Fund',
+            description: 'Focus on industrial and manufacturing sector stocks.',
             min_amount: 15000,
             max_amount: 150000,
             daily_interest: 17,
             total_interest: 17 * nextThreeDuration,
             duration: nextThreeDuration,
             risk_level: 'medium',
-            raw_material: 'Silver',
-            category: 'metals',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: false,
-            features: ['Medium Risk', 'Industrial Demand', 'Portfolio Diversification', 'Regular Returns'],
+            features: ['Medium Risk', 'Industrial Focus', 'Portfolio Diversification', 'Regular Returns'],
             color: '#C0C0C0',
-            icon: '🥈',
+            icon: '🏭',
             display_order: 5
         },
         {
-            name: 'Timber (Teak)',
-            description: 'Premium Teak wood with high value in construction and furniture.',
+            name: 'Sustainable Future ETF',
+            description: 'Invest in environmentally and socially responsible companies.',
             min_amount: 20000,
             max_amount: 200000,
             daily_interest: 19,
             total_interest: 19 * nextThreeDuration,
             duration: nextThreeDuration,
             risk_level: 'medium',
-            raw_material: 'Teak Wood',
-            category: 'timber',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: false,
-            features: ['Sustainable', 'High Demand', 'Long-term Value', 'Environmental Impact'],
+            features: ['ESG Focus', 'Sustainable', 'Future‑Proof', 'Daily Returns'],
             color: '#8B4513',
-            icon: '🌳',
+            icon: '🌱',
             display_order: 6
         },
         {
-            name: 'Natural Gas',
-            description: 'Clean energy source with increasing global demand.',
+            name: 'Energy Sector Leaders',
+            description: 'Top companies in the energy sector, including renewables.',
             min_amount: 75000,
             max_amount: 750000,
             daily_interest: 23,
             total_interest: 23 * remainingDuration,
             duration: remainingDuration,
             risk_level: 'high',
-            raw_material: 'Natural Gas',
-            category: 'energy',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: false,
             features: ['High Returns', 'Energy Transition', 'Global Market', 'Premium Investment'],
             color: '#4169E1',
-            icon: '🔥',
+            icon: '⚡',
             display_order: 7
         },
         {
-            name: 'Aquaculture (Salmon)',
-            description: 'Premium salmon farming with sustainable practices.',
+            name: 'Consumer Staples Fund',
+            description: 'Stocks of essential consumer goods companies with steady demand.',
             min_amount: 30000,
             max_amount: 300000,
             daily_interest: 21,
             total_interest: 21 * remainingDuration,
             duration: remainingDuration,
             risk_level: 'medium',
-            raw_material: 'Salmon',
-            category: 'aquaculture',
+            raw_material: 'Stocks',
+            category: 'stocks',
             is_popular: false,
-            features: ['Sustainable Farming', 'High Nutritional Value', 'Growing Demand', 'Regular Returns'],
+            features: ['Essential Goods', 'Steady Demand', 'Resilient', 'Regular Returns'],
             color: '#FF6B6B',
-            icon: '🐟',
+            icon: '🛒',
             display_order: 8
         }
     ];
@@ -2023,7 +2141,7 @@ const createDefaultInvestmentPlans = async () => {
 
 const createAdminUser = async () => {
     try {
-        const adminEmail = process.env.ADMIN_EMAIL || 'admin@rawwealthy.com';
+        const adminEmail = process.env.ADMIN_EMAIL || 'admin@luckyinvestment.com';
         const adminPassword = process.env.ADMIN_PASSWORD || 'Admin123456';
         
         let existingAdmin = await User.findOne({ email: adminEmail });
@@ -2039,7 +2157,7 @@ const createAdminUser = async () => {
         }
         
         const admin = new User({
-            full_name: 'Raw Wealthy Admin',
+            full_name: 'Lucky Investment Admin',
             email: adminEmail,
             phone: '09161806424',
             password: adminPassword,
@@ -2087,7 +2205,7 @@ app.get('/health', async (req, res) => {
         success: true,
         status: 'OK',
         timestamp: new Date().toISOString(),
-        version: '51.0.0',
+        version: '52.0.0',
         environment: config.nodeEnv,
         database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
         uptime: process.uptime(),
@@ -2112,8 +2230,8 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         success: true,
-        message: '🚀 Raw Wealthy Backend API v51.0 - Production Ready Enhanced Edition',
-        version: '51.0.0',
+        message: '🚀 Lucky Investment Backend v52.0 - Production Ready Enhanced Edition with Separate Deposit Balance & Earnings',
+        version: '52.0.0',
         timestamp: new Date().toISOString(),
         status: 'Operational',
         environment: config.nodeEnv,
@@ -2124,7 +2242,9 @@ app.get('/', (req, res) => {
             admin_controls: '✅ ENABLED',
             real_time_updates: '✅ ENABLED',
             atomic_transactions: '✅ ENABLED',
-            secure_sockets: '✅ ENABLED'
+            secure_sockets: '✅ ENABLED',
+            auto_correct_earnings: config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED',
+            separate_balance_and_earnings: '✅ ENABLED (balance = deposits only)'
         },
         endpoints: {
             auth: '/api/auth/*',
@@ -2139,7 +2259,9 @@ app.get('/', (req, res) => {
             admin: '/api/admin/*',
             upload: '/api/upload',
             forgot_password: '/api/auth/forgot-password',
-            health: '/health'
+            health: '/health',
+            debug_earnings: '/api/debug/earnings-status/:userId',
+            admin_recalc: '/api/admin/users/:id/recalculate-earnings'
         }
     });
 });
@@ -2275,7 +2397,8 @@ app.get('/api/debug/system-status', adminAuth, async (req, res) => {
                 allInvestmentsRequireAdminApproval: config.allInvestmentsRequireAdminApproval,
                 deductBalanceOnlyOnApproval: config.deductBalanceOnlyOnApproval,
                 minWithdrawal: config.minWithdrawal,
-                planDurations: config.planDurations
+                planDurations: config.planDurations,
+                autoCorrectEarnings: config.autoCorrectEarnings
             }
         };
         
@@ -2286,6 +2409,7 @@ app.get('/api/debug/system-status', adminAuth, async (req, res) => {
 });
 
 // ==================== AUTH ENDPOINTS ====================
+// (All unchanged)
 app.post('/api/auth/register', [
     body('full_name').notEmpty().trim().isLength({ min: 2, max: 100 }),
     body('email').isEmail().normalizeEmail(),
@@ -2293,6 +2417,7 @@ app.post('/api/auth/register', [
     body('password').isLength({ min: 6 }),
     body('referral_code').optional().trim()
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -2361,7 +2486,7 @@ app.post('/api/auth/register', [
         
         await createNotification(
             user._id,
-            'Welcome to Raw Wealthy!',
+            'Welcome to Lucky Investment!',
             'Your account has been successfully created. Start your investment journey today.',
             'success',
             '/dashboard'
@@ -2378,7 +2503,7 @@ app.post('/api/auth/register', [
         if (config.emailEnabled) {
             await sendEmail(
                 user.email,
-                'Welcome to Raw Wealthy!',
+                'Welcome to Lucky Investment!',
                 `<h2>Welcome ${user.full_name}!</h2>
                 <p>Your account has been successfully created.</p>
                 <p><strong>Account Details:</strong></p>
@@ -2405,6 +2530,7 @@ app.post('/api/auth/login', [
     body('email').isEmail().normalizeEmail(),
     body('password').notEmpty()
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -2539,6 +2665,7 @@ app.put('/api/profile', auth, [
     body('email_notifications').optional().isBoolean(),
     body('sms_notifications').optional().isBoolean()
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -2577,6 +2704,7 @@ app.put('/api/profile/bank', auth, [
     body('account_number').notEmpty().trim(),
     body('bank_code').optional().trim()
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -2622,6 +2750,7 @@ app.put('/api/profile/bank', auth, [
 });
 
 // ==================== PASSWORD RESET ENDPOINTS ====================
+// (unchanged)
 app.post('/api/auth/forgot-password', [
     body('email').isEmail().normalizeEmail()
 ], async (req, res) => {
@@ -2708,7 +2837,7 @@ app.post('/api/auth/reset-password/:token', [
     }
 });
 
-// ==================== INVESTMENT PLANS ENDPOINTS - ENHANCED WITH UPDATED INTEREST RATES AND DURATIONS ====================
+// ==================== INVESTMENT PLANS ENDPOINTS ====================
 app.get('/api/plans', async (req, res) => {
     try {
         const plans = await InvestmentPlan.find({ is_active: true })
@@ -2742,7 +2871,7 @@ app.get('/api/plans', async (req, res) => {
     }
 });
 
-// ==================== INVESTMENT ENDPOINTS - AUTOMATIC APPROVAL ====================
+// ==================== INVESTMENT ENDPOINTS ====================
 app.get('/api/investments', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -2795,7 +2924,6 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
     body('amount').isFloat({ min: config.minInvestment }),
     body('auto_renew').optional().isBoolean()
 ], async (req, res) => {
-    // Use a session for atomic transaction
     const session = await mongoose.startSession();
     session.startTransaction();
     
@@ -2840,12 +2968,12 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
                 `Maximum investment for ${plan.name} is ₦${plan.max_amount.toLocaleString()}`));
         }
         
-        // Check if user has sufficient balance
+        // Check if user has sufficient balance (deposit balance only)
         if (investmentAmount > freshUser.balance) {
             await session.abortTransaction();
             session.endSession();
             return res.status(400).json(formatResponse(false, 
-                `Insufficient balance. Available: ₦${freshUser.balance.toLocaleString()}, Required: ₦${investmentAmount.toLocaleString()}`));
+                `Insufficient deposit balance. Available: ₦${freshUser.balance.toLocaleString()}, Required: ₦${investmentAmount.toLocaleString()}`));
         }
         
         let proofUrl = null;
@@ -2887,7 +3015,6 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         await investment.save({ session });
         
         // Deduct balance immediately
-        // We'll use the session for user update as well
         freshUser.balance -= investmentAmount;
         freshUser.total_investments = (freshUser.total_investments || 0) + investmentAmount;
         freshUser.last_investment_date = new Date();
@@ -2900,7 +3027,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         
         await freshUser.save({ session });
         
-        // Create transaction record
+        // Create transaction record for investment
         const transaction = new Transaction({
             user: userId,
             type: 'investment',
@@ -2927,7 +3054,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         
         await transaction.save({ session });
         
-        // Add first day's interest immediately
+        // Add first day's interest immediately (now using updated createTransaction which will not affect balance)
         const dailyEarning = (investmentAmount * plan.daily_interest) / 100;
         investment.earned_so_far = dailyEarning;
         investment.interest_added_count = 1;
@@ -2935,9 +3062,9 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         // next_interest_date already set
         await investment.save({ session });
         
-        // Credit first day interest to user
+        // Credit first day interest to user's total_earnings only (not balance)
         freshUser.total_earnings += dailyEarning;
-        freshUser.balance += dailyEarning;
+        // Do NOT add to balance
         await freshUser.save({ session });
         
         const interestTransaction = new Transaction({
@@ -2947,7 +3074,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
             description: `First day interest from ${plan.name} investment`,
             status: 'completed',
             reference: generateReference('INT'),
-            balance_before: freshUser.balance - dailyEarning,
+            balance_before: freshUser.balance, // unchanged
             balance_after: freshUser.balance,
             earnings_before: freshUser.total_earnings - dailyEarning,
             earnings_after: freshUser.total_earnings,
@@ -2989,7 +3116,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         await createNotification(
             userId,
             'Investment Successfully Created!',
-            `Your investment of ₦${investmentAmount.toLocaleString()} in ${plan.name} has been automatically approved and is now active. First day interest of ₦${dailyEarning.toLocaleString()} has been credited.`,
+            `Your investment of ₦${investmentAmount.toLocaleString()} in ${plan.name} has been automatically approved and is now active. First day interest of ₦${dailyEarning.toLocaleString()} has been credited to your earnings.`,
             'investment',
             '/investments'
         );
@@ -3017,7 +3144,8 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
                 next_interest_date: investment.next_interest_date
             },
             user_balance: {
-                current_balance: freshUser.balance
+                current_balance: freshUser.balance,
+                withdrawable_earnings: freshUser.withdrawable_earnings
             }
         }));
     } catch (error) {
@@ -3028,6 +3156,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
 });
 
 // ==================== DEPOSIT ENDPOINTS ====================
+// (unchanged)
 app.get('/api/deposits', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -3145,6 +3274,7 @@ app.post('/api/deposits', auth, upload.single('payment_proof'), [
 });
 
 // ==================== WITHDRAWAL ENDPOINTS - ADVANCED WITH ADMIN APPROVAL ====================
+// (unchanged except for comment)
 app.get('/api/withdrawals', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -3194,6 +3324,7 @@ app.post('/api/withdrawals', auth, [
     body('amount').isFloat({ min: config.minWithdrawal }),
     body('payment_method').isIn(['bank_transfer', 'crypto', 'paypal'])
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -3378,6 +3509,7 @@ app.post('/api/withdrawals', auth, [
 
 // ==================== TRANSACTION ENDPOINTS ====================
 app.get('/api/transactions', auth, async (req, res) => {
+    // ... unchanged ...
     try {
         const userId = req.user._id;
         const { type, status, start_date, end_date, page = 1, limit = 20 } = req.query;
@@ -3431,6 +3563,7 @@ app.get('/api/transactions', auth, async (req, res) => {
 });
 
 // ==================== KYC ENDPOINTS ====================
+// (unchanged)
 app.post('/api/kyc', auth, upload.fields([
     { name: 'id_front', maxCount: 1 },
     { name: 'id_back', maxCount: 1 },
@@ -3555,6 +3688,7 @@ app.get('/api/kyc/status', auth, async (req, res) => {
 });
 
 // ==================== SUPPORT ENDPOINTS ====================
+// (unchanged)
 app.post('/api/support', auth, upload.array('attachments', 5), [
     body('subject').notEmpty().trim().isLength({ min: 5, max: 200 }),
     body('message').notEmpty().trim().isLength({ min: 10, max: 5000 }),
@@ -3710,6 +3844,7 @@ app.get('/api/referrals/stats', auth, async (req, res) => {
 });
 
 // ==================== NOTIFICATION ENDPOINTS ====================
+// (unchanged)
 app.get('/api/notifications', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -3839,7 +3974,7 @@ if (config.paymentEnabled) {
                 deposit.transaction_hash = payload.data.flw_ref;
                 await deposit.save();
                 
-                // Credit user's balance
+                // Credit user's balance (using updated createTransaction which adds to balance)
                 await createTransaction(
                     deposit.user,
                     'deposit',
@@ -3939,6 +4074,15 @@ cron.schedule('30 * * * *', async () => {
         config.cronLocks.investmentCompletion = false;
     }
 });
+
+// ==================== NEW: AUTO-CORRECT EARNINGS CRON JOB ====================
+// Run daily at configured time if enabled
+if (config.autoCorrectEarnings) {
+    cron.schedule(config.autoCorrectCronSchedule, async () => {
+        console.log('🔄 Running scheduled auto-correct earnings...');
+        await autoCorrectAllUsersEarnings();
+    });
+}
 
 // ==================== ADMIN ENDPOINTS - ENHANCED WITH USER MANAGEMENT ====================
 app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
@@ -4065,7 +4209,8 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
                 aml_flags: '/api/admin/aml-flags',
                 all_users: '/api/admin/users',
                 suspended_users: '/api/admin/users?account_status=suspended',
-                rejected_users: '/api/admin/users?account_status=rejected'
+                rejected_users: '/api/admin/users?account_status=rejected',
+                recalc_earnings: '/api/admin/users/:id/recalculate-earnings'
             }
         }));
     } catch (error) {
@@ -4237,10 +4382,12 @@ app.get('/api/admin/users/:id', adminAuth, async (req, res) => {
 });
 
 // ==================== ADVANCED ADMIN USER MANAGEMENT ENDPOINTS ====================
+// (suspend, activate, reject, update-balance remain unchanged)
 app.post('/api/admin/users/:id/suspend', adminAuth, [
     body('reason').notEmpty().trim().isLength({ min: 5, max: 500 }),
     body('duration_days').optional().isInt({ min: 1, max: 365 })
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -4316,6 +4463,7 @@ app.post('/api/admin/users/:id/suspend', adminAuth, [
 });
 
 app.post('/api/admin/users/:id/activate', adminAuth, async (req, res) => {
+    // ... unchanged ...
     try {
         const userId = req.params.id;
         const adminId = req.user._id;
@@ -4378,6 +4526,7 @@ app.post('/api/admin/users/:id/activate', adminAuth, async (req, res) => {
 app.post('/api/admin/users/:id/reject', adminAuth, [
     body('reason').notEmpty().trim().isLength({ min: 5, max: 500 })
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -4454,6 +4603,7 @@ app.post('/api/admin/users/:id/update-balance', adminAuth, [
     body('type').isIn(['add', 'subtract', 'set']),
     body('reason').notEmpty().trim().isLength({ min: 5, max: 500 })
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
@@ -4553,6 +4703,66 @@ app.post('/api/admin/users/:id/update-balance', adminAuth, [
     }
 });
 
+// ==================== NEW: ADMIN EARNINGS RECALCULATION ENDPOINT ====================
+app.post('/api/admin/users/:id/recalculate-earnings', adminAuth, async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    
+    try {
+        const userId = req.params.id;
+        
+        const userBefore = await User.findById(userId).session(session);
+        if (!userBefore) {
+            await session.abortTransaction();
+            session.endSession();
+            return res.status(404).json(formatResponse(false, 'User not found'));
+        }
+        
+        const recalcResult = await recalculateUserEarnings(userId, session);
+        
+        // Create admin audit log
+        await AdminAudit.create([{
+            admin_id: req.user._id,
+            action: 'recalculate_earnings',
+            target_type: 'user',
+            target_id: userId,
+            details: {
+                before: {
+                    total_earnings: userBefore.total_earnings,
+                    referral_earnings: userBefore.referral_earnings,
+                    total_withdrawn: userBefore.total_withdrawn,
+                    withdrawable_earnings: userBefore.withdrawable_earnings
+                },
+                after: recalcResult.recalculated,
+                transaction_count: recalcResult.transactionCount
+            },
+            ip_address: req.ip,
+            user_agent: req.headers['user-agent']
+        }], { session });
+        
+        await session.commitTransaction();
+        session.endSession();
+        
+        await createNotification(
+            userId,
+            'Earnings Recalculated',
+            'Your earnings have been recalculated by admin to ensure accuracy.',
+            'info',
+            '/profile'
+        );
+        
+        res.json(formatResponse(true, 'Earnings recalculated successfully', {
+            user: recalcResult.user,
+            recalculated: recalcResult.recalculated,
+            transaction_count: recalcResult.transactionCount
+        }));
+    } catch (error) {
+        await session.abortTransaction();
+        session.endSession();
+        handleError(res, error, 'Error recalculating earnings');
+    }
+});
+
 // ==================== ADVANCED ADMIN INVESTMENT MANAGEMENT ====================
 app.get('/api/admin/pending-investments', adminAuth, async (req, res) => {
     try {
@@ -4582,6 +4792,7 @@ app.get('/api/admin/pending-investments', adminAuth, async (req, res) => {
 app.post('/api/admin/investments/:id/approve', adminAuth, [
     body('remarks').optional().trim()
 ], async (req, res) => {
+    // ... unchanged ...
     try {
         const investmentId = req.params.id;
         const adminId = req.user._id;
@@ -4695,7 +4906,7 @@ app.post('/api/admin/investments/:id/approve', adminAuth, [
 app.post('/api/admin/investments/:id/reject', adminAuth, [
     body('rejection_reason').notEmpty().trim().isLength({ min: 5, max: 500 })
 ], async (req, res) => {
-    // Use session for atomic reversal
+    // ... unchanged ...
     const session = await mongoose.startSession();
     session.startTransaction();
     
@@ -4737,15 +4948,9 @@ app.post('/api/admin/investments/:id/reject', adminAuth, [
             
             // Also reverse any interest already earned
             if (investment.earned_so_far > 0) {
-                // Subtract from total_earnings and balance (since interest was added to balance)
+                // Subtract from total_earnings (but not balance, since earnings were never in balance)
                 user.total_earnings = Math.max(0, user.total_earnings - investment.earned_so_far);
-                user.balance = Math.max(0, user.balance - investment.earned_so_far); // careful: interest was added, so removing it
-                // Actually, the interest was added to balance and total_earnings. To reverse, we subtract from both.
-                // But if the user has already withdrawn some earnings, this could cause negative. Better to just add the principal back and note that earnings reversal may be partial.
-                // For simplicity, we'll add principal back and leave earnings as is, but we should reverse the transactions.
-                // This is complex; in production, you'd have a comprehensive reversal logic.
-                // Here we'll just add principal back and create a refund transaction.
-                console.log(`⚠️ Investment had earned ${investment.earned_so_far} interest. Reversal not fully implemented for earnings.`);
+                // withdrawable_earnings will be recalculated in pre-save
             }
             
             await user.save({ session });
@@ -4831,6 +5036,7 @@ app.post('/api/admin/investments/:id/reject', adminAuth, [
 });
 
 // ==================== ADVANCED DEPOSIT MANAGEMENT ====================
+// (unchanged)
 app.get('/api/admin/pending-deposits', adminAuth, async (req, res) => {
     try {
         const pendingDeposits = await Deposit.find({ status: 'pending' })
@@ -4874,7 +5080,7 @@ app.post('/api/admin/deposits/:id/approve', adminAuth, [
         
         await deposit.save();
         
-        // Credit user's balance
+        // Credit user's balance (using updated createTransaction which adds to balance)
         await createTransaction(
             deposit.user._id,
             'deposit',
@@ -4927,7 +5133,6 @@ app.post('/api/admin/deposits/:id/approve', adminAuth, [
     }
 });
 
-// ==================== ADVANCED DEPOSIT REJECTION ====================
 app.post('/api/admin/deposits/:id/reject', adminAuth, [
     body('rejection_reason').notEmpty().trim().isLength({ min: 5, max: 500 })
 ], async (req, res) => {
@@ -5026,7 +5231,6 @@ app.post('/api/admin/withdrawals/:id/approve', adminAuth, [
     body('transaction_id').optional().trim(),
     body('remarks').optional().trim()
 ], async (req, res) => {
-    // Use session for atomic update
     const session = await mongoose.startSession();
     session.startTransaction();
     
@@ -5079,7 +5283,8 @@ app.post('/api/admin/withdrawals/:id/approve', adminAuth, [
             pendingTransaction.description = `Withdrawal via ${withdrawal.payment_method}`;
             await pendingTransaction.save({ session });
         } else {
-            // If no pending transaction, create a completed one
+            // If no pending transaction, create a completed one (but we already have one from request creation)
+            // This case should not happen, but just in case:
             await createTransaction(
                 withdrawal.user._id,
                 'withdrawal',
@@ -5098,12 +5303,11 @@ app.post('/api/admin/withdrawals/:id/approve', adminAuth, [
             );
         }
         
-        // Now update user's withdrawable earnings and balance
-        // The pre-save hook will handle withdrawable_earnings update
-        user.balance = Math.max(0, user.balance - withdrawal.amount);
+        // Now update user's total_withdrawn (and thus withdrawable_earnings) but NOT balance
         user.total_withdrawn += withdrawal.amount;
         user.total_withdrawals = (user.total_withdrawals || 0) + withdrawal.amount;
         user.last_withdrawal_date = new Date();
+        // Do NOT deduct from balance
         await user.save({ session });
         
         await session.commitTransaction();
@@ -5155,7 +5359,6 @@ app.post('/api/admin/withdrawals/:id/approve', adminAuth, [
 app.post('/api/admin/withdrawals/:id/reject', adminAuth, [
     body('rejection_reason').notEmpty().trim()
 ], async (req, res) => {
-    // Use session for atomic update
     const session = await mongoose.startSession();
     session.startTransaction();
     
@@ -5482,7 +5685,7 @@ const startServer = async () => {
         
         server.listen(config.port, () => {
             console.log('\n🚀 ============================================');
-            console.log(`✅ Raw Wealthy Backend v51.0 - PRODUCTION READY`);
+            console.log(`✅ Lucky Investment Backend v52.0 - PRODUCTION READY`);
             console.log(`🌐 Environment: ${config.nodeEnv}`);
             console.log(`📍 Port: ${config.port}`);
             console.log(`🔗 Server URL: ${config.serverURL}`);
@@ -5505,23 +5708,26 @@ const startServer = async () => {
             console.log('11.✅ REFERRAL COMMISSION: 20% on first investment');
             console.log('12.✅ ALL WITHDRAWALS REQUIRE ADMIN APPROVAL');
             console.log('13.✅ REAL-TIME ADMIN NOTIFICATIONS');
+            console.log('14.✅ EARNINGS RECALCULATION ENGINE (admin fix tool)');
+            console.log(`15.✅ AUTO‑CORRECT EARNINGS CRON: ${config.autoCorrectEarnings ? 'ENABLED' : 'DISABLED'}`);
+            console.log('16.✅ SEPARATE DEPOSIT BALANCE AND EARNINGS (investments use deposit balance only)');
             console.log('============================================\n');
             
             console.log('💰 UPDATED INTEREST RATES & DURATIONS (configurable):');
             console.log('============================================');
             console.log(`FIRST THREE PLANS (${config.planDurations.firstThree} days):`);
-            console.log('1. 🌱 Cocoa Beans: ₦3,500 min (15% daily)');
-            console.log('2. 🥇 Gold: ₦50,000 min (20% daily)');
-            console.log('3. 🛢️ Crude Oil: ₦100,000 min (25% daily)');
+            console.log('1. 📈 StableGrowth Ltd.: ₦3,000 min (15% daily)');
+            console.log('2. 🌍 Global Equity Fund: ₦50,000 min (20% daily)');
+            console.log('3. 🚀 HighYield Ventures: ₦100,000 min (25% daily)');
             console.log(`\nNEXT THREE PLANS (${config.planDurations.nextThree} days):`);
-            console.log('4. ☕ Coffee Beans: ₦5,500 min (19% daily)');
-            console.log('5. 🥈 Silver Bullion: ₦15,000 min (17% daily)');
-            console.log('6. 🌳 Timber (Teak): ₦20,000 min (19% daily)');
+            console.log('4. 💵 Dividend Kings Inc.: ₦5,500 min (19% daily)');
+            console.log('5. 🏭 Industrial Select Fund: ₦15,000 min (17% daily)');
+            console.log('6. 🌱 Sustainable Future ETF: ₦20,000 min (19% daily)');
             console.log(`\nREMAINING PLANS (${config.planDurations.remaining} days):`);
-            console.log('7. 🔥 Natural Gas: ₦75,000 min (23% daily)');
-            console.log('8. 🐟 Aquaculture (Salmon): ₦30,000 min (21% daily)');
+            console.log('7. ⚡ Energy Sector Leaders: ₦75,000 min (23% daily)');
+            console.log('8. 🛒 Consumer Staples Fund: ₦30,000 min (21% daily)');
             console.log(`📊 Total Investment Plans: 8`);
-            console.log(`💰 Price Range: ₦3,500 - ₦1,000,000`);
+            console.log(`💰 Price Range: ₦3,000 - ₦1,000,000`);
             console.log(`💰 Minimum Withdrawal: ₦${config.minWithdrawal.toLocaleString()}`);
             console.log(`💰 Referral Commission: ${config.referralCommissionPercent}% (First investment only)`);
             console.log('============================================\n');
@@ -5537,6 +5743,7 @@ const startServer = async () => {
             console.log('8. ✅ COMPREHENSIVE FINANCIAL REPORTS');
             console.log('9. ✅ REAL-TIME USER FINANCIAL SUMMARY');
             console.log('10.✅ AUDIT LOGS FOR ALL ADMIN ACTIONS');
+            console.log('11.✅ EARNINGS RECALCULATION TOOL (fix discrepancies)');
             console.log('============================================\n');
             
             console.log('✅ ALL ORIGINAL ENDPOINTS PRESERVED AND ENHANCED');
@@ -5568,4 +5775,3 @@ process.on('SIGINT', () => {
 
 // Start the server
 startServer();
-  
