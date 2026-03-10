@@ -70,13 +70,18 @@ if (missingEnvVars.length > 0) {
 }
 
 // Set default values
+// Set default values – including the new MongoDB Atlas URI
 const PORT = process.env.PORT || 10000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`;
 
+// YOUR NEW MONGODB URI (hardcoded fallback)
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://investoship_db_user:ZrxqpBc2CScHOsvc@cluster0.qlmjh9u.mongodb.net/raw_wealthy_prod?retryWrites=true&w=majority&appName=Cluster0';
+
 console.log('✅ PORT:', PORT);
 console.log('✅ CLIENT_URL:', CLIENT_URL);
 console.log('✅ SERVER_URL:', SERVER_URL);
+console.log('✅ MONGODB_URI:', MONGODB_URI.replace(/:[^:]*@/, ':****@')); // Hide password in logs
 console.log('============================\n');
 
 // ==================== DYNAMIC CONFIGURATION ====================
@@ -86,8 +91,8 @@ const config = {
     nodeEnv: process.env.NODE_ENV || 'production',
     serverURL: SERVER_URL,
     
-    // Database
-    mongoURI: process.env.MONGODB_URI,
+    // Database – using the constant defined above
+    mongoURI: MONGODB_URI,
     
     // Security
     jwtSecret: process.env.JWT_SECRET,
