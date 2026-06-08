@@ -1,9 +1,10 @@
-// server.js - LUCKY INVESTMENT BACKEND v53.0 - PRODUCTION READY ENHANCED EDITION
+// server.js - LUCKY INVESTMENT BACKEND v53.1 - PRODUCTION READY ENHANCED EDITION
 // ENHANCED WITH SEPARATE DEPOSIT BALANCE & EARNINGS, FIXED REFERRAL LOGIC,
 // PROPER WITHDRAWAL HANDLING, SOCKET AUTHENTICATION, CONFIGURABLE BUSINESS RULES,
 // DISK-BASED FILE UPLOADS, EARNINGS RECALCULATION ENGINE, AUTO-CORRECT DISCREPANCIES,
 // ADMIN FIX TOOL, INVESTMENTS FUNDED ONLY FROM DEPOSIT BALANCE,
 // AND OPTIONAL DEPOSIT PROOF UPLOAD WITH ROBUST ERROR HANDLING.
+// FIXES: Conditional JSON parser to avoid multipart interference, trust proxy setting.
 
 import express from 'express';
 import mongoose from 'mongoose';
@@ -209,6 +210,10 @@ console.log(`- Deposit Proof Required: ❌ OPTIONAL (user can submit without fil
 
 // ==================== ENHANCED EXPRESS SETUP WITH SOCKET.IO ====================
 const app = express();
+
+// ========== FIX 1: Trust Proxy ==========
+app.set('trust proxy', 1);   // ✅ Fix for express-rate-limit with X-Forwarded-For
+
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: {
@@ -338,13 +343,20 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// ==================== ENHANCED BODY PARSING ====================
-app.use(express.json({
-    limit: '50mb',
-    verify: (req, res, buf) => {
-        req.rawBody = buf;
+// ==================== ENHANCED BODY PARSING WITH MULTIPART SKIP ====================
+// ========== FIX 2: Conditional JSON parser to avoid interfering with multipart ==========
+app.use((req, res, next) => {
+    if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
+        // Skip JSON parsing for file uploads – let multer handle it
+        return next();
     }
-}));
+    express.json({
+        limit: '50mb',
+        verify: (req, res, buf) => {
+            req.rawBody = buf;
+        }
+    })(req, res, next);
+});
 
 app.use(express.urlencoded({
     extended: true,
@@ -2102,7 +2114,7 @@ app.get('/health', async (req, res) => {
         success: true,
         status: 'OK',
         timestamp: new Date().toISOString(),
-        version: '53.0.0',
+        version: '53.1.0',
         environment: config.nodeEnv,
         database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
         uptime: process.uptime(),
@@ -2127,8 +2139,8 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         success: true,
-        message: '🚀 Lucky Investment Backend v53.0 - Production Ready Enhanced Edition with Optional Deposit Proof',
-        version: '53.0.0',
+        message: '🚀 Lucky Investment Backend v53.1 - Production Ready Enhanced Edition with Optional Deposit Proof & Fixed JSON Parsing',
+        version: '53.1.0',
         timestamp: new Date().toISOString(),
         status: 'Operational',
         environment: config.nodeEnv,
@@ -2142,7 +2154,8 @@ app.get('/', (req, res) => {
             secure_sockets: '✅ ENABLED',
             auto_correct_earnings: config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED',
             separate_balance_and_earnings: '✅ ENABLED (balance = deposits only)',
-            deposit_proof_optional: '✅ OPTIONAL (user can submit without file)'
+            deposit_proof_optional: '✅ OPTIONAL (user can submit without file)',
+            json_parser_fixed: '✅ Skips multipart/form-data'
         },
         endpoints: {
             auth: '/api/auth/*',
@@ -5463,7 +5476,7 @@ const startServer = async () => {
         
         server.listen(config.port, () => {
             console.log('\n🚀 ============================================');
-            console.log(`✅ Lucky Investment Backend v53.0 - PRODUCTION READY`);
+            console.log(`✅ Lucky Investment Backend v53.1 - PRODUCTION READY`);
             console.log(`🌐 Environment: ${config.nodeEnv}`);
             console.log(`📍 Port: ${config.port}`);
             console.log(`🔗 Server URL: ${config.serverURL}`);
@@ -5472,12 +5485,12 @@ const startServer = async () => {
             console.log(`📊 Database: Connected`);
             console.log('============================================\n');
             
-            console.log('🎯 ENHANCEMENTS IN v53.0:');
+            console.log('🎯 ENHANCEMENTS IN v53.1:');
             console.log('1. ✅ Deposit file upload is now OPTIONAL');
-            console.log('2. ✅ Global Multer error handler returns JSON always');
+            console.log('2. ✅ Conditional JSON parser skips multipart/form-data');
             console.log('3. ✅ Fixed "Unexpected token" error for deposits');
-            console.log('4. ✅ All endpoints return proper JSON on error');
-            console.log('5. ✅ Production‑ready error logging');
+            console.log('4. ✅ Trust proxy enabled for rate limiting');
+            console.log('5. ✅ All endpoints return proper JSON on error');
             console.log('============================================\n');
         });
     } catch (error) {
