@@ -1,13 +1,9 @@
-// server.js - LUCKY INVESTMENT BACKEND v53.0 - ADVANCED DEBUGGING & FALLBACKS
-// FULLY INTEGRATED WITH:
-// - Robust multer error handling (returns JSON always)
-// - Ephemeral disk storage with fallback to memory buffer if disk fails
-// - Cloudinary optional integration (if keys provided) as secondary fallback
-// - Comprehensive request/response logging
-// - Graceful fallbacks for file uploads
-// - All original models, routes, and business logic preserved
-// - No HTML error pages – everything returns JSON
-// - Auto-healing uploads directory
+// server.js - LUCKY INVESTMENT BACKEND v53.0 - PRODUCTION READY ENHANCED EDITION
+// ENHANCED WITH SEPARATE DEPOSIT BALANCE & EARNINGS, FIXED REFERRAL LOGIC,
+// PROPER WITHDRAWAL HANDLING, SOCKET AUTHENTICATION, CONFIGURABLE BUSINESS RULES,
+// DISK-BASED FILE UPLOADS, EARNINGS RECALCULATION ENGINE, AUTO-CORRECT DISCREPANCIES,
+// ADMIN FIX TOOL, INVESTMENTS FUNDED ONLY FROM DEPOSIT BALANCE,
+// AND OPTIONAL DEPOSIT PROOF UPLOAD WITH ROBUST ERROR HANDLING.
 
 import express from 'express';
 import mongoose from 'mongoose';
@@ -74,11 +70,12 @@ if (missingEnvVars.length > 0) {
     }
 }
 
-// Set default values
+// Set default values – including the new MongoDB Atlas URI
 const PORT = process.env.PORT || 10000;
 const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
 const SERVER_URL = process.env.SERVER_URL || `http://localhost:${PORT}`;
 
+// YOUR NEW MONGODB URI (hardcoded fallback)
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://investoship_db_user:ZrxqpBc2CScHOsvc@cluster0.qlmjh9u.mongodb.net/raw_wealthy_prod?retryWrites=true&w=majority&appName=Cluster0';
 
 console.log('✅ PORT:', PORT);
@@ -89,15 +86,24 @@ console.log('============================\n');
 
 // ==================== DYNAMIC CONFIGURATION ====================
 const config = {
+    // Server
     port: PORT,
     nodeEnv: process.env.NODE_ENV || 'production',
     serverURL: SERVER_URL,
+    
+    // Database – using the constant defined above
     mongoURI: MONGODB_URI,
+    
+    // Security
     jwtSecret: process.env.JWT_SECRET,
     jwtExpiresIn: process.env.JWT_EXPIRES_IN || '30d',
     bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS) || 12,
+    
+    // Client
     clientURL: CLIENT_URL,
     allowedOrigins: [],
+    
+    // Email
     emailEnabled: process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASSWORD,
     emailConfig: {
         host: process.env.EMAIL_HOST,
@@ -107,6 +113,8 @@ const config = {
         pass: process.env.EMAIL_PASSWORD,
         from: process.env.EMAIL_FROM || `"Lucky Investment" <${process.env.EMAIL_USER}>`
     },
+    
+    // Payment Integration
     paymentEnabled: process.env.FLUTTERWAVE_PUBLIC_KEY && process.env.FLUTTERWAVE_SECRET_KEY,
     paymentConfig: {
         flutterwave: {
@@ -119,25 +127,36 @@ const config = {
             secretKey: process.env.PAYSTACK_SECRET_KEY
         }
     },
+    
+    // Business Logic - now configurable via environment with defaults
     minInvestment: parseInt(process.env.MIN_INVESTMENT) || 3000,
     minDeposit: parseInt(process.env.MIN_DEPOSIT) || 3000,
     minWithdrawal: parseInt(process.env.MIN_WITHDRAWAL) || 4000,
     maxWithdrawalPercent: parseFloat(process.env.MAX_WITHDRAWAL_PERCENT) || 100,
+    
     platformFeePercent: parseFloat(process.env.PLATFORM_FEE_PERCENT) || 10,
     referralCommissionPercent: parseFloat(process.env.REFERRAL_COMMISSION_PERCENT) || 20,
     welcomeBonus: parseInt(process.env.WELCOME_BONUS) || 100,
+    
+    // Investment durations (days) - configurable
     planDurations: {
         firstThree: parseInt(process.env.PLAN_DURATION_FIRST_THREE) || 20,
         nextThree: parseInt(process.env.PLAN_DURATION_NEXT_THREE) || 15,
         remaining: parseInt(process.env.PLAN_DURATION_REMAINING) || 9
     },
+    
+    // Feature flags
     dailyInterestTime: process.env.DAILY_INTEREST_TIME || '00:00',
     withdrawalAutoApprove: process.env.WITHDRAWAL_AUTO_APPROVE === 'true' ? true : false,
     referralCommissionOnFirstInvestment: process.env.REFERRAL_COMMISSION_ON_FIRST_INVESTMENT !== 'false',
     allInvestmentsRequireAdminApproval: process.env.ALL_INVESTMENTS_REQUIRE_ADMIN_APPROVAL === 'true' ? true : false,
     deductBalanceOnlyOnApproval: process.env.DEDUCT_BALANCE_ONLY_ON_APPROVAL === 'true' ? true : false,
+    
+    // NEW: Auto‑correct earnings discrepancies (disabled by default)
     autoCorrectEarnings: process.env.AUTO_CORRECT_EARNINGS === 'true' ? true : false,
     autoCorrectCronSchedule: process.env.AUTO_CORRECT_CRON_SCHEDULE || '0 3 * * *',
+    
+    // Storage
     uploadDir: path.join(__dirname, 'uploads'),
     maxFileSize: parseInt(process.env.MAX_FILE_SIZE) || 10 * 1024 * 1024,
     allowedMimeTypes: {
@@ -149,18 +168,12 @@ const config = {
         'application/pdf': 'pdf',
         'image/svg+xml': 'svg'
     },
+    
+    // System locks for cron jobs
     cronLocks: {
         dailyInterest: false,
         investmentCompletion: false,
         autoCorrectEarnings: false
-    },
-    // NEW: Cloudinary fallback (if env keys provided)
-    cloudinaryEnabled: !!(process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET),
-    cloudinaryConfig: {
-        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-        api_key: process.env.CLOUDINARY_API_KEY,
-        api_secret: process.env.CLOUDINARY_API_SECRET,
-        upload_preset: process.env.CLOUDINARY_UPLOAD_PRESET
     }
 };
 
@@ -191,8 +204,8 @@ console.log(`- Referral Commission: ${config.referralCommissionPercent}%`);
 console.log(`- All Investments Require Admin Approval: ${config.allInvestmentsRequireAdminApproval}`);
 console.log(`- Balance Deducted Only on Approval: ${config.deductBalanceOnlyOnApproval}`);
 console.log(`- Auto‑Correct Earnings: ${config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED'}`);
-console.log(`- Cloudinary Fallback: ${config.cloudinaryEnabled ? '✅ ENABLED' : '❌ DISABLED (using disk)'}`);
 console.log(`- Allowed Origins: ${config.allowedOrigins.length}`);
+console.log(`- Deposit Proof Required: ❌ OPTIONAL (user can submit without file)`);
 
 // ==================== ENHANCED EXPRESS SETUP WITH SOCKET.IO ====================
 const app = express();
@@ -204,7 +217,7 @@ const io = new Server(server, {
     }
 });
 
-// Socket authentication middleware (unchanged)
+// Socket authentication middleware
 io.use((socket, next) => {
     const token = socket.handshake.auth.token;
     if (!token) {
@@ -220,7 +233,7 @@ io.use((socket, next) => {
     }
 });
 
-// Real-time connection handling
+// Real-time connection handling with authentication
 io.on('connection', (socket) => {
     console.log(`🔌 New authenticated socket connection: ${socket.id} (user: ${socket.userId})`);
     
@@ -287,6 +300,7 @@ app.use(helmet({
     }
 }));
 
+// Security middleware
 app.use(xss());
 app.use(hpp());
 app.use(mongoSanitize());
@@ -357,6 +371,7 @@ const rateLimiters = {
     admin: createRateLimiter(15 * 60 * 1000, 500, 'Too many admin requests')
 };
 
+// Apply rate limiting
 app.use('/api/auth/register', rateLimiters.createAccount);
 app.use('/api/auth/login', rateLimiters.auth);
 app.use('/api/auth/forgot-password', rateLimiters.passwordReset);
@@ -367,37 +382,22 @@ app.use('/api/withdrawals', rateLimiters.financial);
 app.use('/api/admin', rateLimiters.admin);
 app.use('/api/', rateLimiters.api);
 
-// ==================== ENHANCED FILE UPLOAD CONFIGURATION WITH FALLBACKS ====================
-// Ensure upload directories exist with retry
-const ensureDirectoryExists = (dirPath) => {
-    try {
-        if (!fs.existsSync(dirPath)) {
-            fs.mkdirSync(dirPath, { recursive: true });
-            console.log(`📁 Created directory: ${dirPath}`);
-        }
-        // Test write permission
-        const testFile = path.join(dirPath, '.write-test');
-        fs.writeFileSync(testFile, 'test');
-        fs.unlinkSync(testFile);
-        return true;
-    } catch (err) {
-        console.error(`❌ Cannot write to directory ${dirPath}:`, err.message);
-        return false;
-    }
-};
+// ==================== ENHANCED FILE UPLOAD CONFIGURATION (DISK STORAGE) ====================
+// Ensure upload directories exist
+if (!fs.existsSync(config.uploadDir)) {
+    fs.mkdirSync(config.uploadDir, { recursive: true });
+    console.log('📁 Created main uploads directory');
+}
 
+// Disk storage configuration
 const diskStorage = multer.diskStorage({
     destination: (req, file, cb) => {
         const folder = req.body.folder || 'general';
         const dest = path.join(config.uploadDir, folder);
-        if (ensureDirectoryExists(dest)) {
-            cb(null, dest);
-        } else {
-            // Fallback: use system temp directory if disk fails
-            const tempDir = path.join(require('os').tmpdir(), 'lucky-uploads');
-            ensureDirectoryExists(tempDir);
-            cb(null, tempDir);
+        if (!fs.existsSync(dest)) {
+            fs.mkdirSync(dest, { recursive: true });
         }
+        cb(null, dest);
     },
     filename: (req, file, cb) => {
         const timestamp = Date.now();
@@ -408,26 +408,6 @@ const diskStorage = multer.diskStorage({
     }
 });
 
-// Memory storage fallback (if disk fails completely)
-const memoryStorage = multer.memoryStorage();
-
-let activeStorage = diskStorage;
-let useDisk = true;
-
-// Test disk storage on startup
-try {
-    const testDest = path.join(config.uploadDir, 'test');
-    ensureDirectoryExists(testDest);
-    const testFile = path.join(testDest, 'test.txt');
-    fs.writeFileSync(testFile, 'test');
-    fs.unlinkSync(testFile);
-    console.log('✅ Disk storage is writable');
-} catch (err) {
-    console.error('❌ Disk storage failed, falling back to memory storage:', err.message);
-    activeStorage = memoryStorage;
-    useDisk = false;
-}
-
 const fileFilter = (req, file, cb) => {
     if (!config.allowedMimeTypes[file.mimetype]) {
         return cb(new Error(`Invalid file type: ${file.mimetype}`), false);
@@ -436,7 +416,7 @@ const fileFilter = (req, file, cb) => {
 };
 
 const upload = multer({
-    storage: activeStorage,
+    storage: diskStorage,
     fileFilter,
     limits: {
         fileSize: config.maxFileSize,
@@ -444,97 +424,17 @@ const upload = multer({
     }
 });
 
-// Enhanced file handler with fallback to cloudinary if available
-let cloudinaryUpload = null;
-if (config.cloudinaryEnabled) {
-    try {
-        const cloudinaryModule = await import('cloudinary');
-        cloudinaryUpload = cloudinaryModule.v2;
-        cloudinaryUpload.config({
-            cloud_name: config.cloudinaryConfig.cloud_name,
-            api_key: config.cloudinaryConfig.api_key,
-            api_secret: config.cloudinaryConfig.api_secret
-        });
-        console.log('✅ Cloudinary configured as fallback');
-    } catch (err) {
-        console.warn('⚠️ Cloudinary module not available, using disk only');
-        cloudinaryUpload = null;
-    }
-}
-
-const handleFileUpload = async (file, folder = 'general', userId = null) => {
-    // First try: disk storage (if active)
-    if (useDisk && file.path) {
-        try {
-            const relativePath = path.relative(config.uploadDir, file.path);
-            const url = `${config.serverURL}/uploads/${relativePath}`;
-            return {
-                url,
-                filename: file.filename,
-                originalName: file.originalname,
-                size: file.size,
-                mimeType: file.mimetype,
-                storage: 'disk'
-            };
-        } catch (err) {
-            console.error('Disk file handling error:', err);
-            // fall through to next method
-        }
-    }
-    
-    // Second try: memory storage (buffer)
-    if (file.buffer) {
-        try {
-            // If cloudinary enabled, upload there
-            if (cloudinaryUpload) {
-                const result = await new Promise((resolve, reject) => {
-                    const uploadStream = cloudinaryUpload.uploader.upload_stream(
-                        { folder: `lucky/${folder}` },
-                        (error, uploadResult) => {
-                            if (error) reject(error);
-                            else resolve(uploadResult);
-                        }
-                    );
-                    uploadStream.end(file.buffer);
-                });
-                return {
-                    url: result.secure_url,
-                    filename: result.public_id,
-                    originalName: file.originalname,
-                    size: file.size,
-                    mimeType: file.mimetype,
-                    storage: 'cloudinary'
-                };
-            }
-            
-            // Otherwise write buffer to temporary disk location (emergency)
-            const tempDir = path.join(require('os').tmpdir(), 'lucky-uploads', folder);
-            ensureDirectoryExists(tempDir);
-            const timestamp = Date.now();
-            const randomStr = crypto.randomBytes(8).toString('hex');
-            const ext = path.extname(file.originalname) || '.bin';
-            const filename = `${timestamp}_${randomStr}${ext}`;
-            const filePath = path.join(tempDir, filename);
-            fs.writeFileSync(filePath, file.buffer);
-            const url = `${config.serverURL}/uploads/temp/${folder}/${filename}`;
-            return {
-                url,
-                filename,
-                originalName: file.originalname,
-                size: file.size,
-                mimeType: file.mimetype,
-                storage: 'temp'
-            };
-        } catch (err) {
-            console.error('Memory/cloudinary fallback error:', err);
-            throw new Error(`File upload failed: ${err.message}`);
-        }
-    }
-    
-    throw new Error('No file content available');
+const handleFileUpload = (file, folder = 'general', userId = null) => {
+    return {
+        url: `${config.serverURL}/uploads/${folder}/${file.filename}`,
+        filename: file.filename,
+        originalName: file.originalname,
+        size: file.size,
+        mimeType: file.mimetype
+    };
 };
 
-// Serve uploaded files (both disk and temp)
+// Serve uploaded files
 app.use('/uploads', express.static(config.uploadDir, {
     maxAge: '7d',
     setHeaders: (res, path) => {
@@ -544,17 +444,27 @@ app.use('/uploads', express.static(config.uploadDir, {
     }
 }));
 
-// Also serve temp uploads from system temp
-const tempUploadDir = path.join(require('os').tmpdir(), 'lucky-uploads');
-if (fs.existsSync(tempUploadDir)) {
-    app.use('/uploads/temp', express.static(tempUploadDir, {
-        maxAge: '1d',
-        setHeaders: (res) => {
-            res.set('X-Content-Type-Options', 'nosniff');
-            res.set('Cache-Control', 'public, max-age=86400');
-        }
-    }));
-}
+// ==================== GLOBAL MULTER ERROR HANDLER ====================
+// This ensures all multer errors return JSON, not HTML or raw multipart text
+app.use((err, req, res, next) => {
+    if (err instanceof multer.MulterError) {
+        // Multer-specific errors
+        console.error('Multer error caught globally:', err);
+        return res.status(400).json({
+            success: false,
+            message: `File upload error: ${err.message}`,
+            code: err.code
+        });
+    }
+    if (err) {
+        console.error('General upload error:', err);
+        return res.status(400).json({
+            success: false,
+            message: err.message || 'Invalid file or request'
+        });
+    }
+    next();
+});
 
 // ==================== EMAIL CONFIGURATION ====================
 let emailTransporter = null;
@@ -606,30 +516,35 @@ const sendEmail = async (to, subject, html, text = '') => {
     }
 };
 
-// ==================== DATABASE MODELS (PRESERVED FROM ORIGINAL) ====================
+// ==================== DATABASE MODELS - ENHANCED WITH FIXES ====================
 const userSchema = new mongoose.Schema({
     full_name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true },
     phone: { type: String, required: true },
     password: { type: String, required: true, select: false },
     role: { type: String, enum: ['user', 'admin', 'super_admin'], default: 'user' },
+    
     balance: { type: Number, default: 0, min: 0 },
     total_earnings: { type: Number, default: 0, min: 0 },
     referral_earnings: { type: Number, default: 0, min: 0 },
     daily_earnings: { type: Number, default: 0, min: 0 },
     total_withdrawn: { type: Number, default: 0, min: 0 },
     withdrawable_earnings: { type: Number, default: 0, min: 0 },
+    
     risk_tolerance: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
     investment_strategy: { type: String, enum: ['conservative', 'balanced', 'aggressive'], default: 'balanced' },
     country: { type: String, default: 'ng' },
     currency: { type: String, enum: ['NGN', 'USD', 'EUR', 'GBP'], default: 'NGN' },
+    
     referral_code: { type: String, unique: true, sparse: true },
     referred_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     referral_count: { type: Number, default: 0 },
+    
     kyc_verified: { type: Boolean, default: false },
     kyc_status: { type: String, enum: ['pending', 'verified', 'rejected', 'not_submitted'], default: 'not_submitted' },
     kyc_submitted_at: Date,
     kyc_verified_at: Date,
+    
     two_factor_enabled: { type: Boolean, default: false },
     two_factor_secret: { type: String, select: false },
     is_active: { type: Boolean, default: true },
@@ -638,6 +553,7 @@ const userSchema = new mongoose.Schema({
     verification_expires: Date,
     password_reset_token: String,
     password_reset_expires: Date,
+    
     bank_details: {
         bank_name: String,
         account_name: String,
@@ -647,6 +563,7 @@ const userSchema = new mongoose.Schema({
         verified_at: Date,
         last_updated: Date
     },
+    
     wallet_address: String,
     paypal_email: String,
     last_login: Date,
@@ -654,10 +571,12 @@ const userSchema = new mongoose.Schema({
     login_attempts: { type: Number, default: 0 },
     lock_until: Date,
     profile_image: String,
+    
     notifications_enabled: { type: Boolean, default: true },
     email_notifications: { type: Boolean, default: true },
     sms_notifications: { type: Boolean, default: false },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
+    
     total_deposits: { type: Number, default: 0 },
     total_withdrawals: { type: Number, default: 0 },
     total_investments: { type: Number, default: 0 },
@@ -665,15 +584,18 @@ const userSchema = new mongoose.Schema({
     last_withdrawal_date: Date,
     last_investment_date: Date,
     last_daily_interest_date: Date,
+    
     first_investment_amount: { type: Number, default: 0 },
     first_investment_date: Date,
     referral_commission_paid: { type: Boolean, default: false },
+    
     login_history: [{
         ip: String,
         location: String,
         device: String,
         timestamp: { type: Date, default: Date.now }
     }],
+    
     account_status: { 
         type: String, 
         enum: ['active', 'suspended', 'rejected', 'pending_verification'], 
@@ -683,8 +605,10 @@ const userSchema = new mongoose.Schema({
     suspension_date: Date,
     suspension_end_date: Date,
     suspended_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    
     last_interest_calculation: Date,
     next_interest_calculation: Date,
+    
     auto_reinvest_earnings: { type: Boolean, default: false },
     auto_reinvest_percentage: { type: Number, default: 50, min: 0, max: 100 }
 }, {
@@ -698,6 +622,7 @@ const userSchema = new mongoose.Schema({
             delete ret.password_reset_token;
             delete ret.login_attempts;
             delete ret.lock_until;
+            
             ret.available_for_withdrawal = doc.availableForWithdrawal;
             ret.portfolio_value = doc.portfolioValue;
             return ret;
@@ -864,7 +789,9 @@ const investmentPlanSchema = new mongoose.Schema({
     tags: [String],
     display_order: { type: Number, default: 0 },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 investmentPlanSchema.index({ is_active: 1, is_popular: 1, category: 1 });
 const InvestmentPlan = mongoose.model('InvestmentPlan', investmentPlanSchema);
@@ -880,6 +807,7 @@ const investmentSchema = new mongoose.Schema({
     rejected_at: Date,
     rejected_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     rejection_reason: String,
+    
     expected_earnings: { type: Number, required: true },
     earned_so_far: { type: Number, default: 0 },
     daily_earnings: { type: Number, default: 0 },
@@ -887,6 +815,7 @@ const investmentSchema = new mongoose.Schema({
     next_interest_date: { type: Date, default: () => new Date(Date.now() + 24 * 60 * 60 * 1000) },
     interest_added_count: { type: Number, default: 1 },
     total_interest_days: { type: Number, default: 0 },
+    
     payment_proof_url: String,
     payment_verified: { type: Boolean, default: true },
     auto_renew: { type: Boolean, default: false },
@@ -894,12 +823,17 @@ const investmentSchema = new mongoose.Schema({
     approved_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     transaction_id: String,
     remarks: String,
+    
     balance_deducted: { type: Boolean, default: true },
     is_auto_approved: { type: Boolean, default: true },
+    
     reversal_transaction_id: String,
     reversed_at: Date,
+    
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 investmentSchema.index({ user: 1, status: 1 });
 investmentSchema.index({ end_date: 1 });
@@ -931,7 +865,9 @@ const depositSchema = new mongoose.Schema({
         coin_type: String
     },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 depositSchema.index({ user: 1, status: 1 });
 depositSchema.index({ reference: 1 }, { unique: true, sparse: true });
@@ -940,10 +876,13 @@ const Deposit = mongoose.model('Deposit', depositSchema);
 const withdrawalSchema = new mongoose.Schema({
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     amount: { type: Number, required: true, min: config.minWithdrawal },
+    
     from_earnings: { type: Number, default: 0 },
     from_referral: { type: Number, default: 0 },
+    
     platform_fee: { type: Number, default: 0 },
     net_amount: { type: Number, required: true },
+    
     bank_details: {
         bank_name: String,
         account_name: String,
@@ -953,6 +892,7 @@ const withdrawalSchema = new mongoose.Schema({
     },
     wallet_address: String,
     paypal_email: String,
+    
     status: { type: String, enum: ['pending', 'approved', 'rejected', 'paid', 'processing'], default: 'pending' },
     reference: { type: String, unique: true, sparse: true },
     admin_notes: String,
@@ -963,8 +903,10 @@ const withdrawalSchema = new mongoose.Schema({
     rejected_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     rejected_at: Date,
     rejection_reason: String,
+    
     auto_approved: { type: Boolean, default: false },
     requires_admin_approval: { type: Boolean, default: true },
+    
     admin_review_status: { 
         type: String, 
         enum: ['pending_review', 'under_review', 'approved', 'rejected'], 
@@ -973,9 +915,13 @@ const withdrawalSchema = new mongoose.Schema({
     reviewed_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     review_notes: String,
     review_date: Date,
+    
     transaction_id_ref: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
+    
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 withdrawalSchema.index({ user: 1, status: 1 });
 withdrawalSchema.index({ admin_review_status: 1 });
@@ -988,6 +934,7 @@ const transactionSchema = new mongoose.Schema({
     description: { type: String, required: true },
     reference: { type: String, unique: true, sparse: true },
     status: { type: String, enum: ['pending', 'completed', 'failed', 'cancelled'], default: 'completed' },
+    
     balance_before: Number,
     balance_after: Number,
     earnings_before: Number,
@@ -996,11 +943,15 @@ const transactionSchema = new mongoose.Schema({
     referral_earnings_after: Number,
     withdrawable_before: Number,
     withdrawable_after: Number,
+    
     related_investment: { type: mongoose.Schema.Types.ObjectId, ref: 'Investment' },
     related_deposit: { type: mongoose.Schema.Types.ObjectId, ref: 'Deposit' },
     related_withdrawal: { type: mongoose.Schema.Types.ObjectId, ref: 'Withdrawal' },
+    
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 transactionSchema.index({ user: 1, createdAt: -1 });
 transactionSchema.index({ type: 1, status: 1 });
@@ -1020,7 +971,9 @@ const kycSubmissionSchema = new mongoose.Schema({
     rejection_reason: String,
     notes: String,
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 kycSubmissionSchema.index({ status: 1 });
 const KYCSubmission = mongoose.model('KYCSubmission', kycSubmissionSchema);
@@ -1045,7 +998,9 @@ const supportTicketSchema = new mongoose.Schema({
     is_read_by_user: { type: Boolean, default: false },
     is_read_by_admin: { type: Boolean, default: false },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 supportTicketSchema.index({ user: 1, status: 1 });
 const SupportTicket = mongoose.model('SupportTicket', supportTicketSchema);
@@ -1055,17 +1010,24 @@ const referralSchema = new mongoose.Schema({
     referred_user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true },
     referral_code: { type: String, required: true },
     status: { type: String, enum: ['pending', 'active', 'completed', 'expired'], default: 'pending' },
+    
     total_commission: { type: Number, default: 0 },
     commission_percentage: { type: Number, default: config.referralCommissionPercent },
+    
     investment_amount: Number,
     earnings_paid: { type: Boolean, default: false },
     paid_at: Date,
+    
     first_investment_commission_paid: { type: Boolean, default: false },
     first_investment_amount: Number,
     first_investment_date: Date,
+    
     commission_transaction_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Transaction' },
+    
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 referralSchema.index({ referrer: 1, status: 1 });
 referralSchema.index({ referred_user: 1 });
@@ -1081,7 +1043,9 @@ const notificationSchema = new mongoose.Schema({
     action_url: String,
     priority: { type: Number, default: 0, min: 0, max: 3 },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 notificationSchema.index({ user: 1, is_read: 1 });
 const Notification = mongoose.model('Notification', notificationSchema);
@@ -1095,7 +1059,9 @@ const adminAuditSchema = new mongoose.Schema({
     ip_address: String,
     user_agent: String,
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 adminAuditSchema.index({ admin_id: 1, createdAt: -1 });
 const AdminAudit = mongoose.model('AdminAudit', adminAuditSchema);
@@ -1112,20 +1078,24 @@ const amlMonitoringSchema = new mongoose.Schema({
     reviewed_at: Date,
     notes: String,
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
+}, {
+    timestamps: true
+});
 
 amlMonitoringSchema.index({ status: 1, risk_score: -1 });
 const AmlMonitoring = mongoose.model('AmlMonitoring', amlMonitoringSchema);
 
-// ==================== UTILITY FUNCTIONS ====================
+// ==================== UTILITY FUNCTIONS - ENHANCED ====================
 const formatResponse = (success, message, data = null, pagination = null) => {
     const response = {
         success,
         message,
         timestamp: new Date().toISOString()
     };
+    
     if (data !== null) response.data = data;
     if (pagination !== null) response.pagination = pagination;
+    
     return response;
 };
 
@@ -1179,6 +1149,7 @@ const createNotification = async (userId, title, message, type = 'info', actionU
         });
         
         await notification.save();
+        
         emitToUser(userId, 'new-notification', {
             title,
             message,
@@ -1221,8 +1192,10 @@ const createNotification = async (userId, title, message, type = 'info', actionU
                     </div>
                 </div>
             `;
+            
             await sendEmail(user.email, emailSubject, emailHtml);
         }
+        
         return notification;
     } catch (error) {
         console.error('Error creating notification:', error);
@@ -1256,21 +1229,25 @@ const createTransaction = async (userId, type, amount, description, status = 'co
                         user.total_earnings = beforeState.total_earnings + amount;
                     }
                     break;
+                    
                 case 'referral_bonus':
                     if (amount > 0) {
                         user.referral_earnings = beforeState.referral_earnings + amount;
                     }
                     break;
+                    
                 case 'investment':
                     const investmentAmount = Math.abs(amount);
                     user.balance = Math.max(0, beforeState.balance - investmentAmount);
                     user.total_investments = (user.total_investments || 0) + investmentAmount;
                     user.last_investment_date = new Date();
+                    
                     if (!user.first_investment_amount || user.first_investment_amount === 0) {
                         user.first_investment_amount = investmentAmount;
                         user.first_investment_date = new Date();
                     }
                     break;
+                    
                 case 'deposit':
                     if (amount > 0) {
                         user.balance = beforeState.balance + amount;
@@ -1278,17 +1255,23 @@ const createTransaction = async (userId, type, amount, description, status = 'co
                         user.last_deposit_date = new Date();
                     }
                     break;
+                    
                 case 'withdrawal':
                     const withdrawalAmount = Math.abs(amount);
+                    const fromEarnings = metadata.from_earnings || 0;
+                    const fromReferral = metadata.from_referral || 0;
+                    
                     user.total_withdrawn = beforeState.total_withdrawn + withdrawalAmount;
                     user.total_withdrawals = (user.total_withdrawals || 0) + withdrawalAmount;
                     user.last_withdrawal_date = new Date();
                     break;
+                    
                 case 'bonus':
                     if (amount > 0) {
                         user.balance = beforeState.balance + amount;
                     }
                     break;
+                    
                 case 'refund':
                     if (amount > 0) {
                         user.balance = beforeState.balance + amount;
@@ -1298,7 +1281,6 @@ const createTransaction = async (userId, type, amount, description, status = 'co
         }
         
         await user.save();
-        console.log(`✅ [TRANSACTION] User updated successfully`);
         
         const afterState = {
             balance: user.balance,
@@ -1332,7 +1314,6 @@ const createTransaction = async (userId, type, amount, description, status = 'co
         });
         
         await transaction.save();
-        console.log(`✅ [TRANSACTION] Transaction record created: ${transaction._id}`);
         
         emitToUser(userId, 'balance-updated', {
             balance: afterState.balance,
@@ -1343,8 +1324,6 @@ const createTransaction = async (userId, type, amount, description, status = 'co
             timestamp: new Date().toISOString()
         });
         
-        console.log(`📊 [TRANSACTION] Final state:`, afterState);
-        console.log(`🎯 [TRANSACTION] Completed successfully for user ${userId}`);
         return { success: true, transaction };
         
     } catch (error) {
@@ -1396,7 +1375,6 @@ const recalculateUserEarnings = async (userId, session = null) => {
         throw new Error('User not found during earnings recalculation');
     }
     
-    console.log(`✅ Recalculated earnings for user ${userId}:`, updateData);
     return {
         user,
         recalculated: updateData,
@@ -1432,7 +1410,6 @@ const autoCorrectAllUsersEarnings = async () => {
                     Math.abs(userBefore.withdrawable_earnings - recalc.recalculated.withdrawable_earnings) > 0.01) {
                     
                     correctedCount++;
-                    console.log(`✅ Corrected user ${user._id}`);
                     
                     await AdminAudit.create([{
                         admin_id: null,
@@ -1515,8 +1492,6 @@ const addDailyInterestForInvestment = async (investment) => {
             }
         );
         
-        console.log(`✅ [INTEREST] Added daily interest: ₦${dailyEarning.toLocaleString()} for investment ${investment._id}`);
-        
         if (investment.interest_added_count >= plan.duration) {
             investment.status = 'completed';
             await investment.save();
@@ -1528,8 +1503,6 @@ const addDailyInterestForInvestment = async (investment) => {
                 'investment',
                 '/investments'
             );
-            
-            console.log(`🎉 [INTEREST] Investment ${investment._id} completed successfully`);
         }
         
         return {
@@ -1586,7 +1559,10 @@ const calculateDailyInterest = async () => {
         };
     } catch (error) {
         console.error('❌ Error in advanced daily interest calculation:', error);
-        return { success: false, error: error.message };
+        return {
+            success: false,
+            error: error.message
+        };
     } finally {
         config.cronLocks.dailyInterest = false;
     }
@@ -1629,8 +1605,6 @@ const addFirstDayInterest = async (investment) => {
                 is_first_day: true
             }
         );
-        
-        console.log(`✅ [FIRST INTEREST] Added first day interest: ₦${dailyEarning.toLocaleString()} for investment ${investment._id}`);
         
         return {
             success: true,
@@ -1713,8 +1687,6 @@ const awardReferralCommission = async (referredUserId, investmentAmount, investm
             '/referrals'
         );
         
-        console.log(`✅ Referral commission awarded: ₦${commission.toLocaleString()} to user ${referredUser.referred_by}`);
-        
         return {
             success: true,
             commission,
@@ -1725,7 +1697,10 @@ const awardReferralCommission = async (referredUserId, investmentAmount, investm
         };
     } catch (error) {
         console.error('❌ Error awarding referral commission:', error);
-        return { success: false, error: error.message };
+        return {
+            success: false,
+            error: error.message
+        };
     }
 };
 
@@ -1777,6 +1752,7 @@ const checkAmlCompliance = async (userId, transactionType, amount, metadata = {}
             });
             
             await amlRecord.save();
+            
             emitToAdmins('aml-flagged', {
                 userId,
                 transactionType,
@@ -1784,11 +1760,13 @@ const checkAmlCompliance = async (userId, transactionType, amount, metadata = {}
                 riskScore,
                 reasons: flaggedReasons
             });
-            
-            console.log(`🚨 AML Flagged: User ${userId}, Risk Score: ${riskScore}, Reasons: ${flaggedReasons.join(', ')}`);
         }
         
-        return { riskScore, flagged: riskScore > 50, reasons: flaggedReasons };
+        return {
+            riskScore,
+            flagged: riskScore > 50,
+            reasons: flaggedReasons
+        };
     } catch (error) {
         console.error('AML check error:', error);
         return { riskScore: 0, flagged: false, reasons: [] };
@@ -2149,7 +2127,7 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         success: true,
-        message: '🚀 Lucky Investment Backend v53.0 - Advanced Debugging & Fallbacks',
+        message: '🚀 Lucky Investment Backend v53.0 - Production Ready Enhanced Edition with Optional Deposit Proof',
         version: '53.0.0',
         timestamp: new Date().toISOString(),
         status: 'Operational',
@@ -2163,9 +2141,8 @@ app.get('/', (req, res) => {
             atomic_transactions: '✅ ENABLED',
             secure_sockets: '✅ ENABLED',
             auto_correct_earnings: config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED',
-            separate_balance_and_earnings: '✅ ENABLED',
-            robust_file_upload: useDisk ? 'disk with fallback' : 'memory/cloudinary fallback',
-            cloudinary_available: !!cloudinaryUpload
+            separate_balance_and_earnings: '✅ ENABLED (balance = deposits only)',
+            deposit_proof_optional: '✅ OPTIONAL (user can submit without file)'
         },
         endpoints: {
             auth: '/api/auth/*',
@@ -2187,7 +2164,7 @@ app.get('/', (req, res) => {
     });
 });
 
-// ==================== ENHANCED DEBUGGING ENDPOINTS ====================
+// ==================== ENHANCED DEBUGGING ENDPOINTS - PROTECTED ====================
 app.get('/api/debug/earnings-status/:userId', auth, async (req, res) => {
     try {
         const userId = req.params.userId;
@@ -2326,7 +2303,7 @@ app.get('/api/debug/system-status', adminAuth, async (req, res) => {
     }
 });
 
-// ==================== AUTH ENDPOINTS (ORIGINAL - PRESERVED) ====================
+// ==================== AUTH ENDPOINTS ====================
 app.post('/api/auth/register', [
     body('full_name').notEmpty().trim().isLength({ min: 2, max: 100 }),
     body('email').isEmail().normalizeEmail(),
@@ -2550,6 +2527,7 @@ app.get('/api/profile', auth, async (req, res) => {
                 withdrawable_earnings: userData.withdrawable_earnings || 0,
                 available_for_withdrawal: userData.availableForWithdrawal || 0,
                 daily_interest: dailyInterest,
+                
                 total_investments: investments,
                 active_investments: activeInvestments.length,
                 total_deposits: deposits,
@@ -2825,7 +2803,7 @@ app.get('/api/investments', auth, async (req, res) => {
     }
 });
 
-// ==================== ENHANCED INVESTMENT CREATION ====================
+// ==================== ENHANCED INVESTMENT CREATION - AUTOMATIC APPROVAL WITH TRANSACTION ====================
 app.post('/api/investments', auth, upload.single('payment_proof'), [
     body('plan_id').notEmpty(),
     body('amount').isFloat({ min: config.minInvestment }),
@@ -2885,7 +2863,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         let proofUrl = null;
         if (req.file) {
             try {
-                const uploadResult = await handleFileUpload(req.file, 'investment-proofs', userId);
+                const uploadResult = handleFileUpload(req.file, 'investment-proofs', userId);
                 proofUrl = uploadResult.url;
             } catch (uploadError) {
                 await session.abortTransaction();
@@ -3048,7 +3026,7 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
     }
 });
 
-// ==================== DEPOSIT ENDPOINTS (ENHANCED WITH ROBUST ERROR HANDLING) ====================
+// ==================== DEPOSIT ENDPOINTS ====================
 app.get('/api/deposits', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -3094,92 +3072,96 @@ app.get('/api/deposits', auth, async (req, res) => {
     }
 });
 
-// ENHANCED DEPOSIT CREATION WITH FULL JSON ERROR RESPONSES (NO HTML)
-app.post('/api/deposits', auth, (req, res, next) => {
-    // Wrap multer with explicit error handling to always return JSON
-    upload.single('payment_proof')(req, res, (err) => {
+// ==================== ENHANCED DEPOSIT ENDPOINT (with optional file upload) ====================
+app.post('/api/deposits', auth, (req, res) => {
+    // Wrap multer to catch errors and allow optional file
+    upload.single('payment_proof')(req, res, async (err) => {
+        // Handle multer errors (if any) and always return JSON
         if (err) {
-            if (err instanceof multer.MulterError) {
-                // Multer-specific errors (file too large, etc.)
-                return res.status(400).json(formatResponse(false, `File upload error: ${err.message}`));
-            } else if (err) {
-                // Other errors (e.g., fileFilter rejection)
-                return res.status(400).json(formatResponse(false, `Upload error: ${err.message}`));
-            }
+            console.error('Multer error in deposit:', err);
+            return res.status(400).json({
+                success: false,
+                message: err.message || 'File upload failed'
+            });
         }
-        next();
-    });
-}, [
-    body('amount').isFloat({ min: config.minDeposit }),
-    body('payment_method').isIn(['bank_transfer', 'crypto', 'paypal', 'card'])
-], async (req, res) => {
-    try {
+
+        // Validation
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json(formatResponse(false, 'Validation failed', { errors: errors.array() }));
         }
-        
-        const { amount, payment_method } = req.body;
-        const userId = req.user._id;
-        const depositAmount = parseFloat(amount);
-        
-        // AML check
-        const amlCheck = await checkAmlCompliance(userId, 'deposit', depositAmount);
-        if (amlCheck.flagged) {
-            return res.status(400).json(formatResponse(false, 
-                'Deposit flagged for review due to compliance checks. Please contact support.'));
-        }
-        
-        let proofUrl = null;
-        if (req.file) {
-            try {
-                const uploadResult = await handleFileUpload(req.file, 'deposit-proofs', userId);
-                proofUrl = uploadResult.url;
-            } catch (uploadError) {
-                return res.status(400).json(formatResponse(false, `File upload failed: ${uploadError.message}`));
+
+        try {
+            const { amount, payment_method } = req.body;
+            const userId = req.user._id;
+            const depositAmount = parseFloat(amount);
+
+            if (isNaN(depositAmount) || depositAmount < config.minDeposit) {
+                return res.status(400).json(formatResponse(false, `Minimum deposit is ₦${config.minDeposit.toLocaleString()}`));
             }
-        }
-        
-        const deposit = new Deposit({
-            user: userId,
-            amount: depositAmount,
-            payment_method,
-            status: 'pending',
-            payment_proof_url: proofUrl,
-            reference: generateReference('DEP')
-        });
-        
-        await deposit.save();
-        
-        await createNotification(
-            userId,
-            'Deposit Request Submitted',
-            `Your deposit request of ₦${depositAmount.toLocaleString()} has been submitted and is pending approval.`,
-            'deposit',
-            '/deposits'
-        );
-        
-        emitToDepositAdmins('new-deposit', {
-            deposit_id: deposit._id,
-            user_id: userId,
-            amount: depositAmount,
-            payment_method,
-            requires_approval: true
-        });
-        
-        res.status(201).json(formatResponse(true, 'Deposit request submitted successfully!', {
-            deposit: {
-                ...deposit.toObject(),
-                formatted_amount: `₦${depositAmount.toLocaleString()}`,
+
+            // AML check for large deposits
+            const amlCheck = await checkAmlCompliance(userId, 'deposit', depositAmount);
+            if (amlCheck.flagged) {
+                return res.status(400).json(formatResponse(false, 
+                    'Deposit flagged for review due to compliance checks. Please contact support.'));
+            }
+
+            let proofUrl = null;
+            // File is optional – only process if present
+            if (req.file) {
+                try {
+                    const uploadResult = handleFileUpload(req.file, 'deposit-proofs', userId);
+                    proofUrl = uploadResult.url;
+                } catch (uploadError) {
+                    return res.status(400).json(formatResponse(false, `File upload failed: ${uploadError.message}`));
+                }
+            }
+
+            const deposit = new Deposit({
+                user: userId,
+                amount: depositAmount,
+                payment_method,
+                status: 'pending',
+                payment_proof_url: proofUrl,
+                reference: generateReference('DEP')
+            });
+
+            await deposit.save();
+
+            await createNotification(
+                userId,
+                'Deposit Request Submitted',
+                `Your deposit request of ₦${depositAmount.toLocaleString()} has been submitted and is pending approval.`,
+                'deposit',
+                '/deposits'
+            );
+
+            // Notify admins
+            emitToDepositAdmins('new-deposit', {
+                deposit_id: deposit._id,
+                user_id: userId,
+                amount: depositAmount,
+                payment_method,
+                has_proof: !!proofUrl,
                 requires_approval: true
-            }
-        }));
-    } catch (error) {
-        handleError(res, error, 'Error creating deposit');
-    }
+            });
+
+            res.status(201).json(formatResponse(true, 'Deposit request submitted successfully!', {
+                deposit: {
+                    ...deposit.toObject(),
+                    formatted_amount: `₦${depositAmount.toLocaleString()}`,
+                    requires_approval: true
+                }
+            }));
+        } catch (error) {
+            console.error('Deposit creation error:', error);
+            res.status(500).json(formatResponse(false, error.message || 'Error creating deposit'));
+        }
+    });
 });
 
-// ==================== WITHDRAWAL ENDPOINTS ====================
+// ==================== WITHDRAWAL ENDPOINTS - ADVANCED WITH ADMIN APPROVAL ====================
 app.get('/api/withdrawals', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -3332,6 +3314,7 @@ app.post('/api/withdrawals', auth, [
             requires_admin_approval: requiresAdminApproval,
             auto_approved: false,
             admin_review_status: 'pending_review',
+            
             ...(payment_method === 'bank_transfer' && freshUser.bank_details ? {
                 bank_details: freshUser.bank_details
             } : {}),
@@ -3341,6 +3324,7 @@ app.post('/api/withdrawals', auth, [
             ...(payment_method === 'paypal' ? {
                 paypal_email: freshUser.paypal_email
             } : {}),
+            
             transaction_id_ref: pendingTransaction.transaction._id
         });
         
@@ -3475,15 +3459,15 @@ app.post('/api/kyc', auth, upload.fields([
         let idFrontUrl, idBackUrl, selfieWithIdUrl, addressProofUrl;
         
         try {
-            idFrontUrl = (await handleFileUpload(files.id_front[0], 'kyc-documents', userId)).url;
-            selfieWithIdUrl = (await handleFileUpload(files.selfie_with_id[0], 'kyc-documents', userId)).url;
+            idFrontUrl = handleFileUpload(files.id_front[0], 'kyc-documents', userId).url;
+            selfieWithIdUrl = handleFileUpload(files.selfie_with_id[0], 'kyc-documents', userId).url;
             
             if (files.id_back && files.id_back[0]) {
-                idBackUrl = (await handleFileUpload(files.id_back[0], 'kyc-documents', userId)).url;
+                idBackUrl = handleFileUpload(files.id_back[0], 'kyc-documents', userId).url;
             }
             
             if (files.address_proof && files.address_proof[0]) {
-                addressProofUrl = (await handleFileUpload(files.address_proof[0], 'kyc-documents', userId)).url;
+                addressProofUrl = handleFileUpload(files.address_proof[0], 'kyc-documents', userId).url;
             }
         } catch (uploadError) {
             return res.status(400).json(formatResponse(false, `File upload failed: ${uploadError.message}`));
@@ -3591,7 +3575,7 @@ app.post('/api/support', auth, upload.array('attachments', 5), [
         const attachments = [];
         for (const file of files) {
             try {
-                const uploadResult = await handleFileUpload(file, 'support-attachments', userId);
+                const uploadResult = handleFileUpload(file, 'support-attachments', userId);
                 attachments.push({
                     filename: uploadResult.filename,
                     url: uploadResult.url,
@@ -3684,7 +3668,7 @@ app.get('/api/support/tickets', auth, async (req, res) => {
     }
 });
 
-// ==================== REFERRAL ENDPOINTS ====================
+// ==================== REFERRAL ENDPOINTS - UPDATED TO 20% ====================
 app.get('/api/referrals/stats', auth, async (req, res) => {
     try {
         const userId = req.user._id;
@@ -3810,7 +3794,7 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
         const userId = req.user._id;
         const folder = req.body.folder || 'general';
         
-        const uploadResult = await handleFileUpload(req.file, folder, userId);
+        const uploadResult = handleFileUpload(req.file, folder, userId);
         
         res.json(formatResponse(true, 'File uploaded successfully', {
             fileUrl: uploadResult.url,
@@ -3883,7 +3867,7 @@ if (config.paymentEnabled) {
     });
 }
 
-// ==================== CRON JOBS ====================
+// ==================== ADVANCED DAILY INTEREST CRON JOB ====================
 cron.schedule('0 * * * *', async () => {
     console.log('🔄 Running advanced daily interest calculation...');
     await calculateDailyInterest();
@@ -3956,7 +3940,7 @@ if (config.autoCorrectEarnings) {
     });
 }
 
-// ==================== ADMIN ENDPOINTS (PRESERVED) ====================
+// ==================== ADMIN ENDPOINTS - ENHANCED WITH USER MANAGEMENT ====================
 app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
     try {
         const [
@@ -4776,10 +4760,13 @@ app.post('/api/admin/investments/:id/reject', adminAuth, [
         
         if (investment.status === 'active' && investment.balance_deducted) {
             const user = await User.findById(investment.user._id).session(session);
+            
             user.balance += investment.amount;
+            
             if (investment.earned_so_far > 0) {
                 user.total_earnings = Math.max(0, user.total_earnings - investment.earned_so_far);
             }
+            
             await user.save({ session });
             
             const refundTransaction = new Transaction({
@@ -4798,6 +4785,7 @@ app.post('/api/admin/investments/:id/reject', adminAuth, [
                 }
             });
             await refundTransaction.save({ session });
+            
             investment.reversal_transaction_id = refundTransaction._id;
             investment.reversed_at = new Date();
         }
@@ -5434,7 +5422,6 @@ app.get('/api/admin/financial-report', adminAuth, async (req, res) => {
     }
 });
 
-// ==================== ERROR HANDLING MIDDLEWARE ====================
 app.use((req, res) => {
     res.status(404).json(formatResponse(false, 'Endpoint not found'));
 });
@@ -5470,63 +5457,27 @@ app.use((err, req, res, next) => {
     res.status(statusCode).json(formatResponse(false, message));
 });
 
-// ==================== START SERVER ====================
 const startServer = async () => {
     try {
         await initializeDatabase();
         
         server.listen(config.port, () => {
             console.log('\n🚀 ============================================');
-            console.log(`✅ Lucky Investment Backend v53.0 - ADVANCED DEBUGGING & FALLBACKS`);
+            console.log(`✅ Lucky Investment Backend v53.0 - PRODUCTION READY`);
             console.log(`🌐 Environment: ${config.nodeEnv}`);
             console.log(`📍 Port: ${config.port}`);
             console.log(`🔗 Server URL: ${config.serverURL}`);
             console.log(`🔗 Client URL: ${config.clientURL}`);
             console.log(`🔌 Socket.IO: Enabled with JWT Authentication`);
             console.log(`📊 Database: Connected`);
-            console.log(`💾 File Storage: ${useDisk ? 'Disk (with fallback)' : 'Memory/Cloudinary fallback'}`);
-            console.log(`☁️ Cloudinary: ${cloudinaryUpload ? 'Configured' : 'Not configured'}`);
             console.log('============================================\n');
             
-            console.log('🎯 PRODUCTION READY FEATURES:');
-            console.log('1. ✅ ATOMIC TRANSACTIONS');
-            console.log('2. ✅ SOCKET.IO AUTHENTICATION');
-            console.log('3. ✅ FIXED REFERRAL COMMISSION (no double award)');
-            console.log('4. ✅ CORRECT WITHDRAWAL LOGIC');
-            console.log('5. ✅ ROBUST FILE UPLOAD (disk → memory → cloudinary)');
-            console.log('6. ✅ CONFIGURABLE BUSINESS RULES');
-            console.log('7. ✅ CRON JOB LOCKS');
-            console.log('8. ✅ INVESTMENT REVERSAL on rejection');
-            console.log('9. ✅ ALL WITHDRAWALS REQUIRE ADMIN APPROVAL');
-            console.log('10.✅ REAL-TIME ADMIN NOTIFICATIONS');
-            console.log('11.✅ EARNINGS RECALCULATION ENGINE');
-            console.log(`12.✅ AUTO‑CORRECT EARNINGS CRON: ${config.autoCorrectEarnings ? 'ENABLED' : 'DISABLED'}`);
-            console.log('13.✅ SEPARATE DEPOSIT BALANCE AND EARNINGS');
-            console.log('14.✅ JSON ERROR RESPONSES FOR ALL ENDPOINTS (no HTML)');
-            console.log('============================================\n');
-            
-            console.log('💰 UPDATED INTEREST RATES & DURATIONS:');
-            console.log('============================================');
-            console.log(`FIRST THREE PLANS (${config.planDurations.firstThree} days):`);
-            console.log('1. 📈 StableGrowth Ltd.: 10% daily (15% original)');
-            console.log('2. 🌍 Global Equity Fund: 10% daily (15% original)');
-            console.log('3. 🚀 HighYield Ventures: 9% daily (9% total)');
-            console.log(`\nNEXT THREE PLANS (${config.planDurations.nextThree} days):`);
-            console.log('4. 💵 Dividend Kings Inc.: 9% daily (9% total)');
-            console.log('5. 🏭 Industrial Select Fund: 10% daily (10% total)');
-            console.log('6. 🌱 Sustainable Future ETF: 10% daily (10% total)');
-            console.log(`\nREMAINING PLANS (${config.planDurations.remaining} days):`);
-            console.log('7. ⚡ Energy Sector Leaders: 13% daily (13% total)');
-            console.log('8. 🛒 Consumer Staples Fund: 11% daily (11% total)');
-            console.log(`📊 Total Investment Plans: 8`);
-            console.log(`💰 Price Range: ₦3,000 - ₦1,000,000`);
-            console.log(`💰 Minimum Withdrawal: ₦${config.minWithdrawal.toLocaleString()}`);
-            console.log(`💰 Referral Commission: ${config.referralCommissionPercent}% (First investment only)`);
-            console.log('============================================\n');
-            
-            console.log('✅ SERVER IS FULLY OPERATIONAL');
-            console.log('✅ ALL ERRORS RETURN JSON (no more HTML responses)');
-            console.log('✅ DEPOSIT UPLOAD ENDPOINT HARDENED');
+            console.log('🎯 ENHANCEMENTS IN v53.0:');
+            console.log('1. ✅ Deposit file upload is now OPTIONAL');
+            console.log('2. ✅ Global Multer error handler returns JSON always');
+            console.log('3. ✅ Fixed "Unexpected token" error for deposits');
+            console.log('4. ✅ All endpoints return proper JSON on error');
+            console.log('5. ✅ Production‑ready error logging');
             console.log('============================================\n');
         });
     } catch (error) {
