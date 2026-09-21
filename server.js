@@ -1,13 +1,16 @@
-// server.js - LUCKY INVESTMENT BACKEND v55.0 - FRONTEND-CONNECTED PRODUCTION EDITION
+// server.js - LIQUIDATED BACKEND v56.0 - FULL FRONTEND-CONNECTED PRODUCTION EDITION
 // ============================================================================
-// v55.0 – FULL FRONTEND INTEGRATION + HARDENING
-//   ✅ Added POST /api/auth/change-password (was missing → frontend calls it)
-//   ✅ Bank details validation now matches frontend: 10-digit account number
+// v56.0 – HOISTING FIX + FULL FRONTEND INTEGRATION + HARDENING
+//   ✅ FIXED: `auth`, `adminAuth`, `formatResponse`, `handleFileUpload` now
+//             declared as hoisted function declarations (no more
+//             "Cannot access 'auth' before initialization" on Render)
+//   ✅ Added POST /api/auth/change-password (frontend Security tab calls it)
+//   ✅ Bank details validation matches frontend: 10-digit account number
 //   ✅ User schema extended with investment_alerts, deposit_confirmations,
 //      marketing_messages, dark_mode (frontend sends these in Preferences)
 //   ✅ KYC accepts full_name (frontend sends it)
 //   ✅ All response shapes match what the Liquidated frontend expects
-//   ✅ 20% referral commission (unchanged, verified end-to-end)
+//   ✅ 20% referral commission (verified end-to-end)
 //   ✅ Env-only MongoDB URI, fail-fast
 //   ✅ Auth-protected file serving (owner + admin only)
 //   ✅ Reserved earnings on withdrawal (prevents over-request)
@@ -19,7 +22,7 @@
 //   ✅ Manual deposits only (no payment webhook)
 //   ✅ Socket.IO with JWT auth
 //   ✅ Withdrawal cooldown awareness (frontend tracks 48h from deposit)
-//   ✅ Phone validation matches frontend (digits-only, min 5)
+//   ✅ KYC gate on withdrawals ≥ ₦10,000
 // ============================================================================
 
 import express from 'express';
@@ -412,15 +415,18 @@ const validateFileSignature = async (filePath, declaredMime) => {
     }
 };
 
-const handleFileUpload = (file, folder = 'general', userId = null) => ({
-    url: `${config.serverURL}/uploads/${folder}/${file.filename}`,
-    filename: file.filename,
-    originalName: file.originalname,
-    size: file.size,
-    mimeType: file.mimetype,
-    folder,
-    owner: userId
-});
+// Hoisted function declaration so routes registered before it can still use it
+function handleFileUpload(file, folder = 'general', userId = null) {
+    return {
+        url: `${config.serverURL}/uploads/${folder}/${file.filename}`,
+        filename: file.filename,
+        originalName: file.originalname,
+        size: file.size,
+        mimeType: file.mimetype,
+        folder,
+        owner: userId
+    };
+}
 
 // ==================== AUTH-PROTECTED FILE SERVING ====================
 const PUBLIC_FOLDERS = new Set(['general', 'avatars', 'public']);
@@ -527,7 +533,88 @@ const sendEmail = async (to, subject, html, text = '') => {
     }
 };
 
-// ==================== MODELS ====================
+// ==================== UTILITY FUNCTIONS (hoisted) ====================
+// Declared as function declarations so they're hoisted and callable from routes
+// registered earlier in the file. This fixes the "Cannot access before init" error.
+function formatResponse(success, message, data = null, pagination = null) {
+    const response = { success, message, timestamp: new Date().toISOString() };
+    if (data !== null) response.data = data;
+    if (pagination !== null) response.pagination = pagination;
+    return response;
+}
+
+function handleError(res, error, defaultMessage = 'An error occurred') {
+    console.error('Error:', error);
+    if (error.name === 'ValidationError') {
+        const messages = Object.values(error.errors).map(v => v.message);
+        return res.status(400).json(formatResponse(false, 'Validation Error', { errors: messages }));
+    }
+    if (error.code === 11000) {
+        const field = Object.keys(error.keyValue)[0];
+        return res.status(400).json(formatResponse(false, `${field} already exists`));
+    }
+    if (error.name === 'JsonWebTokenError') {
+        return res.status(401).json(formatResponse(false, 'Invalid token'));
+    }
+    if (error.name === 'TokenExpiredError') {
+        return res.status(401).json(formatResponse(false, 'Token expired'));
+    }
+    const statusCode = error.statusCode || error.status || 500;
+    const message = config.nodeEnv === 'production' && statusCode === 500 ? defaultMessage : error.message;
+    return res.status(statusCode).json(formatResponse(false, message));
+}
+
+function generateReference(prefix = 'REF') {
+    return `${prefix}${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+}
+
+// ==================== AUTH MIDDLEWARE (hoisted function declarations) ====================
+// CRITICAL FIX: previously declared as `const` which are NOT hoisted in ESM,
+// causing "Cannot access 'auth' before initialization" when the /uploads route
+// was registered earlier in the module. Now they are hoisted function declarations.
+async function auth(req, res, next) {
+    try {
+        let token = req.header('Authorization');
+        if (!token) return res.status(401).json(formatResponse(false, 'No token, authorization denied'));
+
+        if (token.startsWith('Bearer ')) token = token.slice(7);
+
+        const decoded = jwt.verify(token, config.jwtSecret);
+        const user = await User.findById(decoded.id);
+
+        if (!user) return res.status(401).json(formatResponse(false, 'Token is not valid'));
+        if (!user.is_active) return res.status(401).json(formatResponse(false, 'Account is deactivated. Please contact support.'));
+        if (user.account_status === 'suspended') return res.status(403).json(formatResponse(false, 'Account is suspended. Please contact support.'));
+        if (user.account_status === 'rejected') return res.status(403).json(formatResponse(false, 'Account has been rejected. Please contact support.'));
+
+        user.last_active = new Date();
+        await user.save();
+
+        req.user = user;
+        req.userId = user._id;
+        next();
+    } catch (error) {
+        if (error.name === 'JsonWebTokenError') return res.status(401).json(formatResponse(false, 'Invalid token'));
+        if (error.name === 'TokenExpiredError') return res.status(401).json(formatResponse(false, 'Token expired'));
+        console.error('Auth middleware error:', error);
+        res.status(500).json(formatResponse(false, 'Server error during authentication'));
+    }
+}
+
+async function adminAuth(req, res, next) {
+    try {
+        await auth(req, res, () => {
+            if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
+                return res.status(403).json(formatResponse(false, 'Access denied. Admin privileges required.'));
+            }
+            next();
+        });
+    } catch (error) {
+        handleError(res, error, 'Admin authentication error');
+    }
+}
+
+// ==================== DATABASE MODELS ====================
 const userSchema = new mongoose.Schema({
     full_name: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true, lowercase: true },
@@ -1103,38 +1190,6 @@ const cronLockSchema = new mongoose.Schema({
 
 const CronLock = mongoose.model('CronLock', cronLockSchema);
 
-// ==================== UTILITY FUNCTIONS ====================
-const formatResponse = (success, message, data = null, pagination = null) => {
-    const response = { success, message, timestamp: new Date().toISOString() };
-    if (data !== null) response.data = data;
-    if (pagination !== null) response.pagination = pagination;
-    return response;
-};
-
-const handleError = (res, error, defaultMessage = 'An error occurred') => {
-    console.error('Error:', error);
-    if (error.name === 'ValidationError') {
-        const messages = Object.values(error.errors).map(v => v.message);
-        return res.status(400).json(formatResponse(false, 'Validation Error', { errors: messages }));
-    }
-    if (error.code === 11000) {
-        const field = Object.keys(error.keyValue)[0];
-        return res.status(400).json(formatResponse(false, `${field} already exists`));
-    }
-    if (error.name === 'JsonWebTokenError') {
-        return res.status(401).json(formatResponse(false, 'Invalid token'));
-    }
-    if (error.name === 'TokenExpiredError') {
-        return res.status(401).json(formatResponse(false, 'Token expired'));
-    }
-    const statusCode = error.statusCode || error.status || 500;
-    const message = config.nodeEnv === 'production' && statusCode === 500 ? defaultMessage : error.message;
-    return res.status(statusCode).json(formatResponse(false, message));
-};
-
-const generateReference = (prefix = 'REF') =>
-    `${prefix}${Date.now()}${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
-
 // ==================== DISTRIBUTED CRON LOCKS ====================
 const acquireCronLock = async (name, ttlMs) => {
     const now = new Date();
@@ -1661,49 +1716,6 @@ const checkAmlCompliance = async (userId, transactionType, amount, metadata = {}
     }
 };
 
-// ==================== AUTH MIDDLEWARE ====================
-const auth = async (req, res, next) => {
-    try {
-        let token = req.header('Authorization');
-        if (!token) return res.status(401).json(formatResponse(false, 'No token, authorization denied'));
-
-        if (token.startsWith('Bearer ')) token = token.slice(7);
-
-        const decoded = jwt.verify(token, config.jwtSecret);
-        const user = await User.findById(decoded.id);
-
-        if (!user) return res.status(401).json(formatResponse(false, 'Token is not valid'));
-        if (!user.is_active) return res.status(401).json(formatResponse(false, 'Account is deactivated. Please contact support.'));
-        if (user.account_status === 'suspended') return res.status(403).json(formatResponse(false, 'Account is suspended. Please contact support.'));
-        if (user.account_status === 'rejected') return res.status(403).json(formatResponse(false, 'Account has been rejected. Please contact support.'));
-
-        user.last_active = new Date();
-        await user.save();
-
-        req.user = user;
-        req.userId = user._id;
-        next();
-    } catch (error) {
-        if (error.name === 'JsonWebTokenError') return res.status(401).json(formatResponse(false, 'Invalid token'));
-        if (error.name === 'TokenExpiredError') return res.status(401).json(formatResponse(false, 'Token expired'));
-        console.error('Auth middleware error:', error);
-        res.status(500).json(formatResponse(false, 'Server error during authentication'));
-    }
-};
-
-const adminAuth = async (req, res, next) => {
-    try {
-        await auth(req, res, () => {
-            if (req.user.role !== 'admin' && req.user.role !== 'super_admin') {
-                return res.status(403).json(formatResponse(false, 'Access denied. Admin privileges required.'));
-            }
-            next();
-        });
-    } catch (error) {
-        handleError(res, error, 'Admin authentication error');
-    }
-};
-
 // ==================== DATABASE INIT ====================
 const initializeDatabase = async () => {
     console.log('🔄 Initializing database...');
@@ -1888,7 +1900,7 @@ app.get('/health', async (req, res) => {
         const health = {
             success: true, status: 'OK',
             timestamp: new Date().toISOString(),
-            version: '55.0.0',
+            version: '56.0.0',
             environment: config.nodeEnv,
             database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
             uptime: process.uptime(),
@@ -1914,12 +1926,13 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         success: true,
-        message: '🚀 Liquidated Backend v55.0 - Frontend-Connected Production Edition',
-        version: '55.0.0',
+        message: '🚀 Liquidated Backend v56.0 - Full Frontend-Connected Production Edition',
+        version: '56.0.0',
         timestamp: new Date().toISOString(),
         status: 'Operational',
         environment: config.nodeEnv,
         features: {
+            hoisting_fix: '✅ ENABLED (auth/adminAuth/formatResponse/handleFileUpload now function declarations)',
             investment_auto_approval: '✅ ENABLED',
             daily_interest_auto: '✅ ENABLED',
             referral_commission: `${config.referralCommissionPercent}%`,
@@ -2216,7 +2229,7 @@ app.post('/api/auth/login', [
     }
 });
 
-// ==================== CHANGE PASSWORD (NEW – frontend expects this) ====================
+// ==================== CHANGE PASSWORD (frontend Security tab) ====================
 app.post('/api/auth/change-password', auth, [
     body('currentPassword').notEmpty(),
     body('newPassword').isLength({ min: 6 })
@@ -4578,7 +4591,7 @@ const startServer = async () => {
 
         server.listen(config.port, () => {
             console.log('\n🚀 ============================================');
-            console.log('✅ Liquidated Backend v55.0 - Frontend-Connected Production Ready');
+            console.log('✅ Liquidated Backend v56.0 - Full Frontend-Connected Production Ready');
             console.log(`🌐 Environment: ${config.nodeEnv}`);
             console.log(`📍 Port: ${config.port}`);
             console.log(`🔗 Server URL: ${config.serverURL}`);
@@ -4586,17 +4599,17 @@ const startServer = async () => {
             console.log('🔌 Socket.IO: Enabled with JWT Authentication');
             console.log('📊 Database: Connected');
             console.log('============================================\n');
-            console.log('🎯 v55.0 FRONTEND-CONNECTED FEATURES:');
-            console.log('1. ✅ POST /api/auth/change-password added');
-            console.log('2. ✅ Bank details validation matches frontend (10 digits)');
-            console.log('3. ✅ User preferences extended (dark_mode, investment_alerts, etc.)');
-            console.log('4. ✅ KYC accepts full_name');
-            console.log('5. ✅ 20% referral commission verified');
-            console.log('6. ✅ Reserved earnings on withdrawal');
-            console.log('7. ✅ Distributed cron locks');
-            console.log('8. ✅ Auth-protected file serving');
-            console.log('9. ✅ Env-only MongoDB URI');
-            console.log('10. ✅ Manual deposits only');
+            console.log('🎯 v56.0 HIGHLIGHTS:');
+            console.log('1. ✅ Hoisting fix – auth/adminAuth/formatResponse/handleFileUpload');
+            console.log('2. ✅ POST /api/auth/change-password added');
+            console.log('3. ✅ Bank details validation matches frontend (10 digits)');
+            console.log('4. ✅ User preferences extended (dark_mode, investment_alerts, etc.)');
+            console.log('5. ✅ KYC accepts full_name');
+            console.log('6. ✅ 20% referral commission verified');
+            console.log('7. ✅ Reserved earnings on withdrawal');
+            console.log('8. ✅ Distributed cron locks');
+            console.log('9. ✅ Auth-protected file serving');
+            console.log('10. ✅ Env-only MongoDB URI');
             console.log('============================================\n');
         });
     } catch (error) {
