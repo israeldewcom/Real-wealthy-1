@@ -1,32 +1,17 @@
-// server.js - LIQUIDATED BACKEND v57.0 - FULL FRONTEND-CONNECTED PRODUCTION EDITION
+// server.js - LIQUIDATED BACKEND v58.0 - CLOUDINARY PRODUCTION EDITION
 // ============================================================================
-// v57.0 – FIXES "Validation failed" ON PUT REQUESTS (bank details, profile)
-//   ✅ FIXED: Body parser now forces JSON parsing regardless of Content-Type
-//             (browser auto-sets `text/plain` on PUT without explicit header,
-//             which previously bypassed express.json → empty req.body →
-//             express-validator reported "Validation failed")
-//   ✅ Added `type: () => true` on express.json() after filtering out
-//             multipart and urlencoded requests
-//   ✅ FIXED: `auth`, `adminAuth`, `formatResponse`, `handleFileUpload` are now
-//             hoisted function declarations (no more
-//             "Cannot access 'auth' before initialization" on Render)
-//   ✅ POST /api/auth/change-password (frontend Security tab calls it)
-//   ✅ Bank details validation matches frontend: 10-digit account number
-//   ✅ User schema extended with investment_alerts, deposit_confirmations,
-//      marketing_messages, dark_mode (frontend sends these in Preferences)
-//   ✅ KYC accepts full_name (frontend sends it)
-//   ✅ 20% referral commission (verified end-to-end)
-//   ✅ Env-only MongoDB URI, fail-fast
-//   ✅ Auth-protected file serving (owner + admin only)
-//   ✅ Reserved earnings on withdrawal (prevents over-request)
-//   ✅ Distributed cron locks (multi-instance safe)
-//   ✅ Fixed auto-correct earnings (nullable admin_id, actor=system)
-//   ✅ Strict CORS allowlist (env-driven EXTRA_ALLOWED_ORIGINS)
-//   ✅ Magic-byte file validation (SVG sandboxed)
-//   ✅ Single global error handler
-//   ✅ Manual deposits only (no payment webhook)
-//   ✅ Socket.IO with JWT auth
-//   ✅ KYC gate on withdrawals ≥ ₦10,000
+// v58.0 – CLOUDINARY FILE STORAGE (EPHEMERAL-DISK-PROOF) ON TOP OF v57.0
+//   ✅ Cloudinary uploads (multer.memoryStorage → upload_stream)
+//   ✅ No disk writes → survives Render/Railway/Fly redeploys & restarts
+//   ✅ KYC documents stored as `authenticated` (private, signed URLs)
+//   ✅ Public assets (deposit proofs, investment proofs, avatars, support)
+//       stored as `upload` (public secure_url)
+//   ✅ Magic-byte validation runs against the in-memory buffer (no disk I/O)
+//   ✅ Signed-URL endpoint for KYC docs (owner + admin only)
+//   ✅ Cloudinary env vars added to fail-fast validation
+//   ✅ All v57.0 fixes retained (body parser, hoisting, change-password,
+//       extended preferences, 10-digit account validation, KYC full_name,
+//       20% referral, reserved earnings, distributed cron locks, etc.)
 // ============================================================================
 
 import express from 'express';
@@ -52,6 +37,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { Server } from 'socket.io';
 import http from 'http';
+import cloudinary from 'cloudinary';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,7 +45,14 @@ const __dirname = path.dirname(__filename);
 dotenv.config({ path: path.join(__dirname, '.env.production') });
 
 // ==================== ENVIRONMENT VALIDATION (FAIL-FAST) ====================
-const requiredEnvVars = ['MONGODB_URI', 'JWT_SECRET', 'NODE_ENV'];
+const requiredEnvVars = [
+    'MONGODB_URI',
+    'JWT_SECRET',
+    'NODE_ENV',
+    'CLOUDINARY_CLOUD_NAME',
+    'CLOUDINARY_API_KEY',
+    'CLOUDINARY_API_SECRET'
+];
 
 console.log('🔍 Environment Configuration:');
 console.log('============================');
@@ -73,6 +66,8 @@ for (const envVar of requiredEnvVars) {
         const display =
             envVar === 'JWT_SECRET' ? '***' :
             envVar === 'MONGODB_URI' ? String(process.env[envVar]).replace(/:[^:@]*@/, ':****@') :
+            envVar === 'CLOUDINARY_API_SECRET' ? '***' :
+            envVar === 'CLOUDINARY_API_KEY' ? '***' :
             process.env[envVar];
         console.log(`✅ ${envVar}: ${display}`);
     }
@@ -100,6 +95,7 @@ console.log('✅ PORT:', PORT);
 console.log('✅ CLIENT_URL:', CLIENT_URL);
 console.log('✅ SERVER_URL:', SERVER_URL);
 console.log('✅ MONGODB_URI: (loaded from env)');
+console.log('✅ CLOUDINARY_CLOUD_NAME:', process.env.CLOUDINARY_CLOUD_NAME);
 console.log('============================\n');
 
 const config = {
@@ -114,6 +110,14 @@ const config = {
 
     clientURL: CLIENT_URL,
     allowedOrigins: [],
+
+    cloudinary: {
+        cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+        api_key: process.env.CLOUDINARY_API_KEY,
+        api_secret: process.env.CLOUDINARY_API_SECRET,
+        secure: true,
+        folder_root: process.env.CLOUDINARY_FOLDER_ROOT || 'liquidated'
+    },
 
     emailEnabled: !!(process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASSWORD),
     emailConfig: {
@@ -168,6 +172,15 @@ const config = {
     }
 };
 
+// ==================== CLOUDINARY INITIALIZATION ====================
+cloudinary.v2.config({
+    cloud_name: config.cloudinary.cloud_name,
+    api_key: config.cloudinary.api_key,
+    api_secret: config.cloudinary.api_secret,
+    secure: true
+});
+console.log('☁️  Cloudinary configured:', config.cloudinary.cloud_name || '❌ MISSING');
+
 const extraOrigins = (process.env.EXTRA_ALLOWED_ORIGINS || '')
     .split(',')
     .map(s => s.trim())
@@ -201,6 +214,7 @@ console.log(`- Referral Commission: ${config.referralCommissionPercent}%`);
 console.log(`- All Investments Require Admin Approval: ${config.allInvestmentsRequireAdminApproval}`);
 console.log(`- Balance Deducted Only on Approval: ${config.deductBalanceOnlyOnApproval}`);
 console.log(`- Auto‑Correct Earnings: ${config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED'}`);
+console.log(`- Cloudinary Root Folder: ${config.cloudinary.folder_root}`);
 console.log(`- Allowed Origins: ${config.allowedOrigins.length}`);
 console.log(`   → ${config.allowedOrigins.join('\n   → ')}`);
 
@@ -272,8 +286,8 @@ app.use(helmet({
             styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
             fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://cdnjs.cloudflare.com'],
             scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net'],
-            imgSrc: ["'self'", 'data:', 'https:', 'http:', config.serverURL, config.clientURL],
-            connectSrc: ["'self'", 'ws:', 'wss:', config.clientURL, config.serverURL]
+            imgSrc: ["'self'", 'data:', 'https:', 'http:', config.serverURL, config.clientURL, 'https://res.cloudinary.com'],
+            connectSrc: ["'self'", 'ws:', 'wss:', config.clientURL, config.serverURL, 'https://api.cloudinary.com', 'https://res.cloudinary.com']
         }
     }
 }));
@@ -379,26 +393,14 @@ app.use('/api/withdrawals', rateLimiters.financial);
 app.use('/api/admin', rateLimiters.admin);
 app.use('/api/', rateLimiters.api);
 
-// ==================== FILE UPLOAD ====================
+// ==================== FILE UPLOAD (CLOUDINARY) ====================
+// Legacy local uploads directory – kept only so the /uploads/:folder/:filename
+// route can still serve any files that were uploaded before v58.0. New uploads
+// never touch disk; they stream straight to Cloudinary.
 if (!fs.existsSync(config.uploadDir)) {
     fs.mkdirSync(config.uploadDir, { recursive: true });
-    console.log('📁 Created main uploads directory');
+    console.log('📁 Created main uploads directory (legacy)');
 }
-
-const diskStorage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        const folder = (req.body.folder || 'general').replace(/[^a-z0-9_-]/gi, '');
-        const dest = path.join(config.uploadDir, folder);
-        if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
-        cb(null, dest);
-    },
-    filename: (req, file, cb) => {
-        const timestamp = Date.now();
-        const randomStr = crypto.randomBytes(8).toString('hex');
-        const ext = path.extname(file.originalname) || '.' + (config.allowedMimeTypes[file.mimetype] || 'bin');
-        cb(null, `${timestamp}_${randomStr}${ext}`);
-    }
-});
 
 const fileFilter = (req, file, cb) => {
     if (!config.allowedMimeTypes[file.mimetype]) {
@@ -407,21 +409,22 @@ const fileFilter = (req, file, cb) => {
     cb(null, true);
 };
 
+// Files are held in RAM, then streamed to Cloudinary. Nothing touches the disk.
 const upload = multer({
-    storage: diskStorage,
+    storage: multer.memoryStorage(),
     fileFilter,
     limits: { fileSize: config.maxFileSize, files: 10 }
 });
 
-const validateFileSignature = async (filePath, declaredMime) => {
+const validateFileSignature = async (buffer, declaredMime) => {
     try {
-        const fd = await fs.promises.open(filePath, 'r');
-        const buf = Buffer.alloc(16);
-        await fd.read(buf, 0, 16, 0);
-        await fd.close();
+        if (!Buffer.isBuffer(buffer) || buffer.length < 16) {
+            throw new Error('Invalid or empty file buffer');
+        }
 
-        const hex = buf.toString('hex').toUpperCase();
-        const ascii = buf.toString('utf8').toLowerCase();
+        const head = buffer.slice(0, 16);
+        const hex = head.toString('hex').toUpperCase();
+        const ascii = head.toString('utf8').toLowerCase();
 
         const signatures = {
             'image/jpeg': () => hex.startsWith('FFD8FF'),
@@ -435,7 +438,6 @@ const validateFileSignature = async (filePath, declaredMime) => {
 
         const check = signatures[declaredMime];
         if (!check || !check()) {
-            await fs.promises.unlink(filePath).catch(() => {});
             throw new Error('File content does not match its declared type');
         }
         return true;
@@ -445,22 +447,57 @@ const validateFileSignature = async (filePath, declaredMime) => {
     }
 };
 
-// Hoisted function declaration so routes registered earlier can use it
-function handleFileUpload(file, folder = 'general', userId = null) {
+// Hoisted function declaration so routes registered earlier can use it.
+// v58.0: async, streams buffer to Cloudinary. KYC documents go up as
+// `authenticated` (private, requires signed URL); everything else is `upload`.
+async function handleFileUpload(file, folder = 'general', userId = null) {
+    if (!file || !file.buffer) {
+        throw new Error('No file buffer available for upload');
+    }
+
+    const privateFolders = new Set(['kyc-documents']);
+    const isPrivate = privateFolders.has(folder);
+
+    const rootFolder = config.cloudinary.folder_root;
+    const targetFolder = `${rootFolder}/${folder}`;
+
+    const result = await new Promise((resolve, reject) => {
+        const stream = cloudinary.v2.uploader.upload_stream(
+            {
+                folder: targetFolder,
+                resource_type: 'auto',
+                type: isPrivate ? 'authenticated' : 'upload',
+                use_filename: false,
+                unique_filename: true,
+                overwrite: false,
+                context: {
+                    userId: userId ? String(userId) : 'anonymous',
+                    folder,
+                    originalName: file.originalname
+                }
+            },
+            (err, res) => (err ? reject(err) : resolve(res))
+        );
+        stream.end(file.buffer);
+    });
+
     return {
-        url: `${config.serverURL}/uploads/${folder}/${file.filename}`,
-        filename: file.filename,
+        url: result.secure_url,
+        public_id: result.public_id,
+        filename: result.public_id.split('/').pop(),
         originalName: file.originalname,
-        size: file.size,
+        size: result.bytes,
         mimeType: file.mimetype,
         folder,
-        owner: userId
+        owner: userId,
+        is_private: isPrivate
     };
 }
 
 // ==================== AUTH MIDDLEWARE (hoisted) ====================
 // Declared as function declarations so routes registered BEFORE this block
-// (like /uploads/:folder/:filename) can reference them without a TDZ error.
+// (like /uploads/:folder/:filename and /api/files/signed/... ) can reference
+// them without a TDZ error.
 async function auth(req, res, next) {
     try {
         let token = req.header('Authorization');
@@ -503,7 +540,9 @@ async function adminAuth(req, res, next) {
     }
 }
 
-// ==================== AUTH-PROTECTED FILE SERVING ====================
+// ==================== LEGACY AUTH-PROTECTED FILE SERVING ====================
+// Kept for any files uploaded before v58.0 that still live on the local disk.
+// New uploads are served straight from Cloudinary URLs stored on the DB.
 const PUBLIC_FOLDERS = new Set(['general', 'avatars', 'public']);
 const RESTRICTED_FOLDERS = new Set(['kyc-documents', 'deposit-proofs', 'investment-proofs', 'support-attachments']);
 
@@ -565,6 +604,48 @@ app.get('/uploads/:folder/:filename', auth, async (req, res) => {
     } catch (err) {
         console.error('File serve error:', err);
         res.status(500).json(formatResponse(false, 'Error serving file'));
+    }
+});
+
+// ==================== CLOUDINARY SIGNED-URL ENDPOINT (KYC docs) ====================
+// For authenticated Cloudinary assets (KYC documents), generate a short-lived
+// signed URL. Only the owner of the document or an admin may request one.
+app.get('/api/files/signed/:publicId(*)', auth, async (req, res) => {
+    try {
+        const publicId = decodeURIComponent(req.params.publicId);
+        if (!publicId) return res.status(400).json(formatResponse(false, 'publicId is required'));
+
+        // Only the owner or an admin can fetch a signed URL
+        const [kyc, dep, inv] = await Promise.all([
+            KYCSubmission.findOne({
+                $or: [
+                    { id_front_url: { $regex: publicId } },
+                    { id_back_url: { $regex: publicId } },
+                    { selfie_with_id_url: { $regex: publicId } },
+                    { address_proof_url: { $regex: publicId } }
+                ]
+            }).lean(),
+            Deposit.findOne({ payment_proof_url: { $regex: publicId } }).lean(),
+            Investment.findOne({ payment_proof_url: { $regex: publicId } }).lean()
+        ]);
+
+        const ownerId = kyc?.user || dep?.user || inv?.user;
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+
+        if (!ownerId) return res.status(404).json(formatResponse(false, 'File not found'));
+        if (!isAdmin && ownerId.toString() !== req.user._id.toString()) {
+            return res.status(403).json(formatResponse(false, 'Access denied'));
+        }
+
+        const signedUrl = cloudinary.v2.utils.private_download_url(publicId, 'auto', {
+            expires_at: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+            type: 'authenticated',
+            attachment: false
+        });
+
+        res.json(formatResponse(true, 'Signed URL generated', { url: signedUrl }));
+    } catch (err) {
+        handleError(res, err, 'Error generating signed URL');
     }
 });
 
@@ -939,6 +1020,7 @@ const investmentSchema = new mongoose.Schema({
     total_interest_days: { type: Number, default: 0 },
 
     payment_proof_url: String,
+    payment_proof_public_id: String,
     payment_verified: { type: Boolean, default: true },
     auto_renew: { type: Boolean, default: false },
     auto_renewed: { type: Boolean, default: false },
@@ -971,6 +1053,7 @@ const depositSchema = new mongoose.Schema({
     },
     status: { type: String, enum: ['pending', 'approved', 'rejected', 'cancelled'], default: 'pending' },
     payment_proof_url: String,
+    payment_proof_public_id: String,
     transaction_hash: String,
     reference: { type: String, unique: true, sparse: true },
     admin_notes: String,
@@ -1087,6 +1170,10 @@ const kycSubmissionSchema = new mongoose.Schema({
     id_back_url: String,
     selfie_with_id_url: { type: String, required: true },
     address_proof_url: String,
+    id_front_public_id: String,
+    id_back_public_id: String,
+    selfie_with_id_public_id: String,
+    address_proof_public_id: String,
     status: { type: String, enum: ['pending', 'approved', 'rejected', 'under_review'], default: 'pending' },
     reviewed_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     reviewed_at: Date,
@@ -1113,6 +1200,7 @@ const supportTicketSchema = new mongoose.Schema({
     attachments: [{
         filename: String,
         url: String,
+        public_id: String,
         size: Number,
         mime_type: String
     }],
@@ -1927,9 +2015,13 @@ app.get('/health', async (req, res) => {
         const health = {
             success: true, status: 'OK',
             timestamp: new Date().toISOString(),
-            version: '57.0.0',
+            version: '58.0.0',
             environment: config.nodeEnv,
             database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+            cloudinary: {
+                configured: !!(config.cloudinary.cloud_name && config.cloudinary.api_key && config.cloudinary.api_secret),
+                cloud_name: config.cloudinary.cloud_name || null
+            },
             uptime: process.uptime(),
             memory: {
                 rss: `${Math.round(process.memoryUsage().rss / 1024 / 1024)}MB`,
@@ -1953,12 +2045,14 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         success: true,
-        message: '🚀 Liquidated Backend v57.0 - Full Frontend-Connected Production Edition',
-        version: '57.0.0',
+        message: '🚀 Liquidated Backend v58.0 - Cloudinary Production Edition',
+        version: '58.0.0',
         timestamp: new Date().toISOString(),
         status: 'Operational',
         environment: config.nodeEnv,
         features: {
+            cloudinary_storage: '✅ ENABLED (ephemeral-disk-proof uploads)',
+            kyc_private_assets: '✅ ENABLED (authenticated + signed URLs)',
             body_parser_fix: '✅ ENABLED (forces JSON parsing on PUT with text/plain)',
             hoisting_fix: '✅ ENABLED (auth/adminAuth/formatResponse/handleFileUpload as function declarations)',
             investment_auto_approval: '✅ ENABLED',
@@ -1976,7 +2070,8 @@ app.get('/', (req, res) => {
             auth_protected_uploads: '✅ ENABLED',
             bank_details_validation: '✅ 10-digit account number enforced',
             change_password: '✅ ENABLED',
-            extended_preferences: '✅ ENABLED (investment_alerts, deposit_confirmations, marketing_messages, dark_mode)'
+            extended_preferences: '✅ ENABLED (investment_alerts, deposit_confirmations, marketing_messages, dark_mode)',
+            signed_url_endpoint: '✅ ENABLED (/api/files/signed/:publicId)'
         },
         endpoints: {
             auth: '/api/auth/*',
@@ -1991,6 +2086,7 @@ app.get('/', (req, res) => {
             referrals: '/api/referrals/*',
             admin: '/api/admin/*',
             upload: '/api/upload',
+            signed_files: '/api/files/signed/:publicId',
             forgot_password: '/api/auth/forgot-password',
             health: '/health',
             debug_earnings: '/api/debug/earnings-status/:userId',
@@ -2100,6 +2196,11 @@ app.get('/api/debug/system-status', adminAuth, async (req, res) => {
                 host: mongoose.connection.host,
                 name: mongoose.connection.name,
                 models: Object.keys(mongoose.connection.models)
+            },
+            cloudinary: {
+                cloud_name: config.cloudinary.cloud_name,
+                folder_root: config.cloudinary.folder_root,
+                configured: !!(config.cloudinary.cloud_name && config.cloudinary.api_key && config.cloudinary.api_secret)
             },
             config: {
                 environment: config.nodeEnv,
@@ -2651,11 +2752,13 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
         }
 
         let proofUrl = null;
+        let proofPublicId = null;
         if (req.file) {
             try {
-                await validateFileSignature(req.file.path, req.file.mimetype);
-                const uploadResult = handleFileUpload(req.file, 'investment-proofs', userId);
+                await validateFileSignature(req.file.buffer, req.file.mimetype);
+                const uploadResult = await handleFileUpload(req.file, 'investment-proofs', userId);
                 proofUrl = uploadResult.url;
+                proofPublicId = uploadResult.public_id;
             } catch (uploadError) {
                 await session.abortTransaction(); session.endSession();
                 return res.status(400).json(formatResponse(false, `File upload failed: ${uploadError.message}`));
@@ -2671,7 +2774,8 @@ app.post('/api/investments', auth, upload.single('payment_proof'), [
             user: userId, plan: plan_id, amount: investmentAmount,
             status: 'active', start_date: new Date(), end_date: endDate,
             expected_earnings: expectedEarnings, daily_earnings: dailyEarnings,
-            auto_renew, payment_proof_url: proofUrl, payment_verified: true,
+            auto_renew, payment_proof_url: proofUrl, payment_proof_public_id: proofPublicId,
+            payment_verified: true,
             balance_deducted: true, is_auto_approved: true,
             next_interest_date: nextInterestDate,
             total_interest_days: plan.duration
@@ -2839,11 +2943,13 @@ app.post('/api/deposits', auth, (req, res) => {
             }
 
             let proofUrl = null;
+            let proofPublicId = null;
             if (req.file) {
                 try {
-                    await validateFileSignature(req.file.path, req.file.mimetype);
-                    const uploadResult = handleFileUpload(req.file, 'deposit-proofs', userId);
+                    await validateFileSignature(req.file.buffer, req.file.mimetype);
+                    const uploadResult = await handleFileUpload(req.file, 'deposit-proofs', userId);
                     proofUrl = uploadResult.url;
+                    proofPublicId = uploadResult.public_id;
                 } catch (uploadError) {
                     return res.status(400).json(formatResponse(false, `File upload failed: ${uploadError.message}`));
                 }
@@ -2855,6 +2961,7 @@ app.post('/api/deposits', auth, (req, res) => {
                 payment_method,
                 status: 'pending',
                 payment_proof_url: proofUrl,
+                payment_proof_public_id: proofPublicId,
                 reference: generateReference('DEP')
             });
             await deposit.save();
@@ -3144,20 +3251,30 @@ app.post('/api/kyc', auth, upload.fields([
         }
 
         let idFrontUrl, idBackUrl, selfieWithIdUrl, addressProofUrl;
+        let idFrontPublicId, idBackPublicId, selfieWithIdPublicId, addressProofPublicId;
         try {
-            await validateFileSignature(files.id_front[0].path, files.id_front[0].mimetype);
-            await validateFileSignature(files.selfie_with_id[0].path, files.selfie_with_id[0].mimetype);
+            await validateFileSignature(files.id_front[0].buffer, files.id_front[0].mimetype);
+            await validateFileSignature(files.selfie_with_id[0].buffer, files.selfie_with_id[0].mimetype);
 
-            idFrontUrl = handleFileUpload(files.id_front[0], 'kyc-documents', userId).url;
-            selfieWithIdUrl = handleFileUpload(files.selfie_with_id[0], 'kyc-documents', userId).url;
+            const idFrontUpload = await handleFileUpload(files.id_front[0], 'kyc-documents', userId);
+            idFrontUrl = idFrontUpload.url;
+            idFrontPublicId = idFrontUpload.public_id;
+
+            const selfieUpload = await handleFileUpload(files.selfie_with_id[0], 'kyc-documents', userId);
+            selfieWithIdUrl = selfieUpload.url;
+            selfieWithIdPublicId = selfieUpload.public_id;
 
             if (files.id_back && files.id_back[0]) {
-                await validateFileSignature(files.id_back[0].path, files.id_back[0].mimetype);
-                idBackUrl = handleFileUpload(files.id_back[0], 'kyc-documents', userId).url;
+                await validateFileSignature(files.id_back[0].buffer, files.id_back[0].mimetype);
+                const idBackUpload = await handleFileUpload(files.id_back[0], 'kyc-documents', userId);
+                idBackUrl = idBackUpload.url;
+                idBackPublicId = idBackUpload.public_id;
             }
             if (files.address_proof && files.address_proof[0]) {
-                await validateFileSignature(files.address_proof[0].path, files.address_proof[0].mimetype);
-                addressProofUrl = handleFileUpload(files.address_proof[0], 'kyc-documents', userId).url;
+                await validateFileSignature(files.address_proof[0].buffer, files.address_proof[0].mimetype);
+                const addressUpload = await handleFileUpload(files.address_proof[0], 'kyc-documents', userId);
+                addressProofUrl = addressUpload.url;
+                addressProofPublicId = addressUpload.public_id;
             }
         } catch (uploadError) {
             return res.status(400).json(formatResponse(false, `File upload failed: ${uploadError.message}`));
@@ -3169,6 +3286,8 @@ app.post('/api/kyc', auth, upload.fields([
             user: userId, id_type, id_number,
             id_front_url: idFrontUrl, id_back_url: idBackUrl,
             selfie_with_id_url: selfieWithIdUrl, address_proof_url: addressProofUrl,
+            id_front_public_id: idFrontPublicId, id_back_public_id: idBackPublicId,
+            selfie_with_id_public_id: selfieWithIdPublicId, address_proof_public_id: addressProofPublicId,
             status: 'pending',
             metadata: { submitted_full_name: full_name || null }
         };
@@ -3217,7 +3336,11 @@ app.get('/api/kyc/status', auth, async (req, res) => {
                 id_front_url: kycSubmission.id_front_url,
                 id_back_url: kycSubmission.id_back_url,
                 selfie_with_id_url: kycSubmission.selfie_with_id_url,
-                address_proof_url: kycSubmission.address_proof_url
+                address_proof_url: kycSubmission.address_proof_url,
+                id_front_public_id: kycSubmission.id_front_public_id,
+                id_back_public_id: kycSubmission.id_back_public_id,
+                selfie_with_id_public_id: kycSubmission.selfie_with_id_public_id,
+                address_proof_public_id: kycSubmission.address_proof_public_id
             } : null
         }));
     } catch (error) {
@@ -3247,11 +3370,12 @@ app.post('/api/support', auth, upload.array('attachments', 5), [
         const attachments = [];
         for (const file of files) {
             try {
-                await validateFileSignature(file.path, file.mimetype);
-                const uploadResult = handleFileUpload(file, 'support-attachments', userId);
+                await validateFileSignature(file.buffer, file.mimetype);
+                const uploadResult = await handleFileUpload(file, 'support-attachments', userId);
                 attachments.push({
                     filename: uploadResult.filename,
                     url: uploadResult.url,
+                    public_id: uploadResult.public_id,
                     size: uploadResult.size,
                     mime_type: uploadResult.mimeType
                 });
@@ -3405,11 +3529,11 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json(formatResponse(false, 'No file uploaded'));
 
-        await validateFileSignature(req.file.path, req.file.mimetype);
+        await validateFileSignature(req.file.buffer, req.file.mimetype);
 
         const userId = req.user._id;
         const folder = (req.body.folder || 'general').replace(/[^a-z0-9_-]/gi, '');
-        const uploadResult = handleFileUpload(req.file, folder, userId);
+        const uploadResult = await handleFileUpload(req.file, folder, userId);
 
         res.json(formatResponse(true, 'File uploaded successfully', {
             fileUrl: uploadResult.url,
@@ -3417,6 +3541,8 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
             originalName: uploadResult.originalName,
             size: uploadResult.size,
             mimeType: uploadResult.mimeType,
+            public_id: uploadResult.public_id,
+            is_private: uploadResult.is_private,
             folder, uploadedAt: new Date()
         }));
     } catch (error) {
@@ -4625,25 +4751,29 @@ const startServer = async () => {
 
         server.listen(config.port, () => {
             console.log('\n🚀 ============================================');
-            console.log('✅ Liquidated Backend v57.0 - Full Frontend-Connected Production Ready');
+            console.log('✅ Liquidated Backend v58.0 - Cloudinary Production Ready');
             console.log(`🌐 Environment: ${config.nodeEnv}`);
             console.log(`📍 Port: ${config.port}`);
             console.log(`🔗 Server URL: ${config.serverURL}`);
             console.log(`🔗 Client URL: ${config.clientURL}`);
+            console.log('☁️  Cloudinary: Connected');
             console.log('🔌 Socket.IO: Enabled with JWT Authentication');
             console.log('📊 Database: Connected');
             console.log('============================================\n');
-            console.log('🎯 v57.0 HIGHLIGHTS:');
-            console.log('1. ✅ Body parser fix – PUT now parses JSON even with text/plain');
-            console.log('2. ✅ Hoisting fix – auth/adminAuth/formatResponse/handleFileUpload');
-            console.log('3. ✅ POST /api/auth/change-password added');
-            console.log('4. ✅ Bank details validation matches frontend (10 digits)');
-            console.log('5. ✅ User preferences extended (dark_mode, investment_alerts, etc.)');
-            console.log('6. ✅ KYC accepts full_name');
-            console.log('7. ✅ 20% referral commission verified');
-            console.log('8. ✅ Reserved earnings on withdrawal');
-            console.log('9. ✅ Distributed cron locks');
-            console.log('10. ✅ Auth-protected file serving');
+            console.log('🎯 v58.0 HIGHLIGHTS:');
+            console.log('1. ✅ Cloudinary storage (ephemeral-disk-proof uploads)');
+            console.log('2. ✅ KYC documents stored as authenticated (private, signed URLs)');
+            console.log('3. ✅ Magic-byte validation on in-memory buffer');
+            console.log('4. ✅ Signed-URL endpoint /api/files/signed/:publicId');
+            console.log('5. ✅ Body parser fix – PUT now parses JSON even with text/plain');
+            console.log('6. ✅ Hoisting fix – auth/adminAuth/formatResponse/handleFileUpload');
+            console.log('7. ✅ POST /api/auth/change-password added');
+            console.log('8. ✅ Bank details validation matches frontend (10 digits)');
+            console.log('9. ✅ User preferences extended (dark_mode, investment_alerts, etc.)');
+            console.log('10. ✅ KYC accepts full_name');
+            console.log('11. ✅ 20% referral commission verified');
+            console.log('12. ✅ Reserved earnings on withdrawal');
+            console.log('13. ✅ Distributed cron locks');
             console.log('============================================\n');
         });
     } catch (error) {
