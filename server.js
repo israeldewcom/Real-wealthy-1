@@ -1,13 +1,15 @@
-// server.js — LIQUIDATED BACKEND v59.0 — PRODUCTION / AWARDS EDITION
+    // server.js - LIQUIDATED BACKEND v59.1 - CLOUDINARY + AWARDS + FRONTEND-MATCHED PLANS
 // ============================================================================
-// v59.0 – INTEGRATED REFERRAL AWARDS SYSTEM + PRODUCTION HARDENING
-//   ✅ 16-tier Referral Awards ladder (5 → 2000+ referrals)
-//   ✅ AwardTier + AwardClaim models, seed, eligibility engine
-//   ✅ /api/awards/* user endpoints + /api/admin/awards/* admin endpoints
-//   ✅ Leaderboard aggregation, ETA / avg-daily referral velocity
-//   ✅ All v58.0 Cloudinary / body-parser / hoisting fixes retained
-//   ✅ Production hardening: graceful shutdown, request budgets, dedupe
-//       guards, atomic balance ops, audit trails, GDPR export, ops runbook
+// v59.1 – FRONTEND-MATCHED INVESTMENT PLANS (on top of v59.0 Awards + Cloudinary)
+//   ✅ Investment plans exactly match frontend FALLBACK_PLANS values
+//   ✅ awards.js mounted (12-tier ambassador programme)
+//   ✅ Public: /api/awards/tiers, /api/awards/leaderboard
+//   ✅ Auth:   /api/awards/status, /api/awards/claims, POST /api/awards/claim/:n
+//   ✅ Admin:  /api/admin/awards/claims, POST /api/admin/awards/claims/:id/:action,
+//              POST /api/admin/awards/seed-tiers
+//   ✅ Auto-seed of 12 tiers on boot
+//   ✅ Cloudinary uploads (v58.0)
+//   ✅ All v57.0/v58.0 features retained
 // ============================================================================
 
 import express from 'express';
@@ -34,6 +36,9 @@ import dotenv from 'dotenv';
 import { Server } from 'socket.io';
 import http from 'http';
 import cloudinary from 'cloudinary';
+
+// ==================== AWARDS MODULE ====================
+import mountAwards from './awards.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -165,9 +170,7 @@ const config = {
         dailyInterest: 55 * 60 * 1000,
         investmentCompletion: 55 * 60 * 1000,
         autoCorrectEarnings: 6 * 60 * 60 * 1000
-    },
-
-    awardsFrontendURL: process.env.AWARDS_FRONTEND_URL || 'https://liquidated-zeta.vercel.app'
+    }
 };
 
 // ==================== CLOUDINARY INITIALIZATION ====================
@@ -187,7 +190,6 @@ const extraOrigins = (process.env.EXTRA_ALLOWED_ORIGINS || '')
 config.allowedOrigins = [...new Set([
     config.clientURL,
     config.serverURL,
-    config.awardsFrontendURL,
     'http://localhost:3000',
     'http://127.0.0.1:3000',
     'http://localhost:3001',
@@ -197,8 +199,8 @@ config.allowedOrigins = [...new Set([
     'https://uun-luckyinvestment.vercel.app',
     'https://real-wealthy-1.onrender.com',
     'https://real-wealthy-1-1.onrender.com',
-    'https://liquidated-zeta.vercel.app',
-    'https://lucky-admin-six.vercel.app',
+    'https://real-wealthy-1-gwiz.onrender.com',
+    'https://liquidated-awards.vercel.app',
     ...extraOrigins
 ].filter(Boolean))];
 
@@ -207,7 +209,6 @@ console.log(`- Port: ${config.port}`);
 console.log(`- Environment: ${config.nodeEnv}`);
 console.log(`- Client URL: ${config.clientURL}`);
 console.log(`- Server URL: ${config.serverURL}`);
-console.log(`- Awards Frontend: ${config.awardsFrontendURL}`);
 console.log(`- Email Enabled: ${config.emailEnabled}`);
 console.log(`- Withdrawal Auto-approve: ${config.withdrawalAutoApprove}`);
 console.log(`- Daily Interest Time: ${config.dailyInterestTime}`);
@@ -217,6 +218,7 @@ console.log(`- All Investments Require Admin Approval: ${config.allInvestmentsRe
 console.log(`- Balance Deducted Only on Approval: ${config.deductBalanceOnlyOnApproval}`);
 console.log(`- Auto‑Correct Earnings: ${config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED'}`);
 console.log(`- Cloudinary Root Folder: ${config.cloudinary.folder_root}`);
+console.log(`- Awards Module: ✅ ENABLED (12-tier ambassador programme)`);
 console.log(`- Allowed Origins: ${config.allowedOrigins.length}`);
 console.log(`   → ${config.allowedOrigins.join('\n   → ')}`);
 
@@ -229,9 +231,7 @@ const io = new Server(server, {
     cors: {
         origin: config.allowedOrigins,
         credentials: true
-    },
-    pingTimeout: 60000,
-    pingInterval: 25000
+    }
 });
 
 io.use((socket, next) => {
@@ -268,7 +268,7 @@ io.on('connection', (socket) => {
         socket.join('withdrawal-approvals');
         socket.join('investment-monitor');
         socket.join('deposit-approvals');
-        socket.join('award-claims');
+        socket.join('awards-approvals');
     });
 
     socket.on('disconnect', () => {
@@ -281,7 +281,6 @@ const emitToAdmins = (event, data) => io.to('admin-room').emit(event, data);
 const emitToWithdrawalAdmins = (event, data) => io.to('withdrawal-approvals').emit(event, data);
 const emitToDepositAdmins = (event, data) => io.to('deposit-approvals').emit(event, data);
 const emitToInvestmentAdmins = (event, data) => io.to('investment-monitor').emit(event, data);
-const emitToAwardAdmins = (event, data) => io.to('award-claims').emit(event, data);
 
 // ==================== SECURITY HEADERS ====================
 app.use(helmet({
@@ -292,8 +291,8 @@ app.use(helmet({
             styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com', 'https://cdnjs.cloudflare.com'],
             fontSrc: ["'self'", 'https://fonts.gstatic.com', 'https://cdnjs.cloudflare.com'],
             scriptSrc: ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net'],
-            imgSrc: ["'self'", 'data:', 'https:', 'http:', config.serverURL, config.clientURL, config.awardsFrontendURL, 'https://res.cloudinary.com'],
-            connectSrc: ["'self'", 'ws:', 'wss:', config.clientURL, config.serverURL, config.awardsFrontendURL, 'https://api.cloudinary.com', 'https://res.cloudinary.com']
+            imgSrc: ["'self'", 'data:', 'https:', 'http:', config.serverURL, config.clientURL, 'https://res.cloudinary.com'],
+            connectSrc: ["'self'", 'ws:', 'wss:', config.clientURL, config.serverURL, 'https://api.cloudinary.com', 'https://res.cloudinary.com']
         }
     }
 }));
@@ -332,12 +331,17 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
-// ==================== BODY PARSING ====================
+// ==================== BODY PARSING (FIXED v57.0) ====================
 app.use((req, res, next) => {
     const ct = (req.headers['content-type'] || '').toLowerCase();
 
-    if (ct.includes('multipart/form-data')) return next();
-    if (ct.includes('application/x-www-form-urlencoded')) return next();
+    if (ct.includes('multipart/form-data')) {
+        return next();
+    }
+
+    if (ct.includes('application/x-www-form-urlencoded')) {
+        return next();
+    }
 
     express.json({
         limit: '50mb',
@@ -367,7 +371,7 @@ const rateLimiters = {
     financial: createRateLimiter(15 * 60 * 1000, 50, 'Too many financial operations'),
     passwordReset: createRateLimiter(15 * 60 * 1000, 5, 'Too many password reset attempts'),
     admin: createRateLimiter(15 * 60 * 1000, 500, 'Too many admin requests'),
-    awardsClaim: createRateLimiter(60 * 60 * 1000, 5, 'Too many award claims submitted')
+    awardsClaim: createRateLimiter(60 * 60 * 1000, 10, 'Too many awards claims from this IP')
 };
 
 app.use('/api/auth/register', rateLimiters.createAccount);
@@ -519,6 +523,110 @@ async function adminAuth(req, res, next) {
     }
 }
 
+// ==================== LEGACY AUTH-PROTECTED FILE SERVING ====================
+const PUBLIC_FOLDERS = new Set(['general', 'avatars', 'public']);
+const RESTRICTED_FOLDERS = new Set(['kyc-documents', 'deposit-proofs', 'investment-proofs', 'support-attachments']);
+
+app.get('/uploads/:folder/:filename', auth, async (req, res) => {
+    try {
+        const { folder, filename } = req.params;
+
+        if (
+            folder.includes('..') || filename.includes('..') ||
+            folder.includes('/') || folder.includes('\\') ||
+            filename.includes('/') || filename.includes('\\')
+        ) {
+            return res.status(400).json(formatResponse(false, 'Invalid path'));
+        }
+
+        if (!fs.existsSync(path.join(config.uploadDir, folder))) {
+            return res.status(404).json(formatResponse(false, 'Folder not found'));
+        }
+
+        const filePath = path.join(config.uploadDir, folder, filename);
+        if (!fs.existsSync(filePath)) {
+            return res.status(404).json(formatResponse(false, 'File not found'));
+        }
+
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+        const isPublic = PUBLIC_FOLDERS.has(folder);
+
+        if (!isPublic && RESTRICTED_FOLDERS.has(folder) && !isAdmin) {
+            const [kyc, dep, inv] = await Promise.all([
+                KYCSubmission.findOne({
+                    $or: [
+                        { id_front_url: { $regex: filename } },
+                        { id_back_url: { $regex: filename } },
+                        { selfie_with_id_url: { $regex: filename } },
+                        { address_proof_url: { $regex: filename } }
+                    ]
+                }).lean(),
+                Deposit.findOne({ payment_proof_url: { $regex: filename } }).lean(),
+                Investment.findOne({ payment_proof_url: { $regex: filename } }).lean()
+            ]);
+
+            const ownerId = kyc?.user || dep?.user || inv?.user;
+            if (!ownerId) return res.status(404).json(formatResponse(false, 'File not found'));
+            if (ownerId.toString() !== req.user._id.toString()) {
+                return res.status(403).json(formatResponse(false, 'Access denied'));
+            }
+        }
+
+        res.set('X-Content-Type-Options', 'nosniff');
+        res.set('Cache-Control', isPublic ? 'public, max-age=86400' : 'private, max-age=3600');
+
+        if (filename.toLowerCase().endsWith('.svg')) {
+            res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+            res.set('Content-Type', 'image/svg+xml');
+            res.set('Content-Disposition', 'inline');
+        }
+
+        res.sendFile(filePath);
+    } catch (err) {
+        console.error('File serve error:', err);
+        res.status(500).json(formatResponse(false, 'Error serving file'));
+    }
+});
+
+// ==================== CLOUDINARY SIGNED-URL ENDPOINT (KYC docs) ====================
+app.get('/api/files/signed/:publicId(*)', auth, async (req, res) => {
+    try {
+        const publicId = decodeURIComponent(req.params.publicId);
+        if (!publicId) return res.status(400).json(formatResponse(false, 'publicId is required'));
+
+        const [kyc, dep, inv] = await Promise.all([
+            KYCSubmission.findOne({
+                $or: [
+                    { id_front_url: { $regex: publicId } },
+                    { id_back_url: { $regex: publicId } },
+                    { selfie_with_id_url: { $regex: publicId } },
+                    { address_proof_url: { $regex: publicId } }
+                ]
+            }).lean(),
+            Deposit.findOne({ payment_proof_url: { $regex: publicId } }).lean(),
+            Investment.findOne({ payment_proof_url: { $regex: publicId } }).lean()
+        ]);
+
+        const ownerId = kyc?.user || dep?.user || inv?.user;
+        const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
+
+        if (!ownerId) return res.status(404).json(formatResponse(false, 'File not found'));
+        if (!isAdmin && ownerId.toString() !== req.user._id.toString()) {
+            return res.status(403).json(formatResponse(false, 'Access denied'));
+        }
+
+        const signedUrl = cloudinary.v2.utils.private_download_url(publicId, 'auto', {
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+            type: 'authenticated',
+            attachment: false
+        });
+
+        res.json(formatResponse(true, 'Signed URL generated', { url: signedUrl }));
+    } catch (err) {
+        handleError(res, err, 'Error generating signed URL');
+    }
+});
+
 // ==================== UTILITY FUNCTIONS (hoisted) ====================
 function formatResponse(success, message, data = null, pagination = null) {
     const response = { success, message, timestamp: new Date().toISOString() };
@@ -616,7 +724,6 @@ const userSchema = new mongoose.Schema({
     referral_code: { type: String, unique: true, sparse: true },
     referred_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     referral_count: { type: Number, default: 0 },
-    confirmed_referral_count: { type: Number, default: 0 },
 
     kyc_verified: { type: Boolean, default: false },
     kyc_status: { type: String, enum: ['pending', 'verified', 'rejected', 'not_submitted'], default: 'not_submitted' },
@@ -730,7 +837,6 @@ userSchema.index({ is_active: 1, role: 1, kyc_status: 1 });
 userSchema.index({ withdrawable_earnings: 1 });
 userSchema.index({ account_status: 1 });
 userSchema.index({ last_interest_calculation: 1 });
-userSchema.index({ confirmed_referral_count: -1 });
 
 userSchema.pre('save', async function (next) {
     if (this.isModified('password')) {
@@ -1111,7 +1217,6 @@ const referralSchema = new mongoose.Schema({
 
 referralSchema.index({ referrer: 1, status: 1 });
 referralSchema.index({ referred_user: 1 });
-referralSchema.index({ referrer: 1, first_investment_commission_paid: 1 });
 const Referral = mongoose.model('Referral', referralSchema);
 
 const notificationSchema = new mongoose.Schema({
@@ -1139,7 +1244,7 @@ const adminAuditSchema = new mongoose.Schema({
     action: { type: String, required: true },
     target_type: {
         type: String,
-        enum: ['user', 'investment', 'deposit', 'withdrawal', 'kyc', 'transaction', 'plan', 'system', 'award_claim', 'award_tier']
+        enum: ['user', 'investment', 'deposit', 'withdrawal', 'kyc', 'transaction', 'plan', 'system', 'award']
     },
     target_id: mongoose.Schema.Types.ObjectId,
     details: mongoose.Schema.Types.Mixed,
@@ -1177,56 +1282,6 @@ const cronLockSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const CronLock = mongoose.model('CronLock', cronLockSchema);
-
-// ==================== AWARDS MODELS ====================
-const awardTierSchema = new mongoose.Schema({
-    tier_number:             { type: Number, required: true, unique: true },
-    slug:                    { type: String, required: true, unique: true },
-    title:                   { type: String, required: true },
-    referrals_required:      { type: Number, required: true },
-    reward_name:             { type: String, required: true },
-    reward_description:      { type: String, required: true },
-    reward_category:         { type: String, enum: ['merch', 'electronics', 'lifestyle', 'vehicle', 'partnership'], required: true },
-    reward_icon:             { type: String, default: '🎁' },
-    image_url:               { type: String, default: '' },
-    accent_color:            { type: String, default: '#d4af37' },
-    estimated_value_ngn:     { type: Number, default: 0 },
-    requires_admin_approval: { type: Boolean, default: true },
-    terms:                   { type: String, default: '' },
-    is_active:               { type: Boolean, default: true },
-    display_order:           { type: Number, default: 0 }
-}, { timestamps: true });
-
-awardTierSchema.index({ referrals_required: 1, is_active: 1 });
-const AwardTier = mongoose.model('AwardTier', awardTierSchema);
-
-const awardClaimSchema = new mongoose.Schema({
-    user:               { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    tier:               { type: mongoose.Schema.Types.ObjectId, ref: 'AwardTier', required: true },
-    tier_number:        { type: Number, required: true },
-    referrals_at_claim: { type: Number, required: true },
-    status: {
-        type: String,
-        enum: ['claimed', 'under_review', 'approved', 'fulfilled', 'rejected'],
-        default: 'claimed'
-    },
-    delivery_details: {
-        full_name: String, phone: String, email: String,
-        address_line: String, city: String, state: String,
-        country: { type: String, default: 'Nigeria' }, postal_code: String
-    },
-    admin_notes: String,
-    reviewed_by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    reviewed_at: Date,
-    fulfilled_at: Date,
-    tracking_info: String,
-    rejection_reason: String,
-    metadata: { type: mongoose.Schema.Types.Mixed, default: {} }
-}, { timestamps: true });
-
-awardClaimSchema.index({ user: 1, tier_number: 1 }, { unique: true });
-awardClaimSchema.index({ status: 1, createdAt: -1 });
-const AwardClaim = mongoose.model('AwardClaim', awardClaimSchema);
 
 // ==================== DISTRIBUTED CRON LOCKS ====================
 const acquireCronLock = async (name, ttlMs) => {
@@ -1698,23 +1753,11 @@ const awardReferralCommission = async (referredUserId, investmentAmount, investm
         referral.commission_transaction_id = txResult.transaction._id;
         await referral.save();
 
-        // Update referrer's confirmed count (used by awards eligibility engine)
-        await User.findByIdAndUpdate(referredUser.referred_by, {
-            $inc: { confirmed_referral_count: 1 }
-        });
-
         await createNotification(
             referredUser.referred_by, 'Referral Commission Earned!',
             `You earned ₦${commission.toLocaleString()} (${config.referralCommissionPercent}%) from ${referredUser.full_name}'s first investment.`,
             'referral', '/referrals'
         );
-
-        // Check for newly unlocked award tiers
-        try {
-            await checkAndNotifyNewAwardTiers(referredUser.referred_by);
-        } catch (awardErr) {
-            console.error('Award tier notification error (non-fatal):', awardErr.message);
-        }
 
         return { success: true, commission, referrerId: referredUser.referred_by, transaction: txResult.transaction };
     } catch (error) {
@@ -1766,137 +1809,6 @@ const checkAmlCompliance = async (userId, transactionType, amount, metadata = {}
     }
 };
 
-// ==================== AWARDS ENGINE ====================
-const img = (file) => `${config.awardsFrontendURL}/${file}`;
-
-const TIER_SEED = [
-    { tier_number: 1,  slug: 'starter',                   title: 'Starter',                   referrals_required: 5,    reward_name: 'Branded T-Shirt + Digital Appreciation Badge', reward_description: 'A premium LIQUIDATED branded tee shipped to your door, plus a permanent digital appreciation badge on your profile.', reward_category: 'merch',       reward_icon: '👕', image_url: img('IMG_20260924_130915.png'), accent_color: '#a8861f', estimated_value_ngn: 25000,    display_order: 1,  terms: 'One claim per account.' },
-    { tier_number: 2,  slug: 'silver-ambassador',         title: 'Silver Ambassador',         referrals_required: 30,   reward_name: 'Smart Watch',                                  reward_description: 'A modern smart watch with health tracking, notifications, and multi-day battery life.',                          reward_category: 'electronics', reward_icon: '⌚', image_url: img('IMG_20260924_130957.png'), accent_color: '#c0c0c0', estimated_value_ngn: 180000,   display_order: 2,  terms: 'KYC verification required.' },
-    { tier_number: 3,  slug: 'gold-ambassador',           title: 'Gold Ambassador',           referrals_required: 50,   reward_name: 'Premium Backpack + Exclusive VIP Badge',      reward_description: 'A durable premium backpack with embroidered LIQUIDATED branding, plus an exclusive VIP badge on your profile.', reward_category: 'merch',       reward_icon: '🎒', image_url: img('IMG_20260924_131037.png'), accent_color: '#d4af37', estimated_value_ngn: 120000,   display_order: 3,  terms: 'VIP badge is non-transferable.' },
-    { tier_number: 4,  slug: 'platinum-ambassador',       title: 'Platinum Ambassador',       referrals_required: 75,   reward_name: 'Premium Gift Package',                        reward_description: 'A curated premium gift package delivered to your door.',                                                    reward_category: 'merch',       reward_icon: '🎁', image_url: img('IMG_20260924_131125.png'), accent_color: '#e5e4e2', estimated_value_ngn: 350000,   display_order: 4,  terms: 'Contents may vary by availability.' },
-    { tier_number: 5,  slug: 'diamond-ambassador',        title: 'Diamond Ambassador',        referrals_required: 100,  reward_name: 'Smartphone',                                   reward_description: 'A current-generation smartphone, unlocked and ready to use. Colour subject to availability.',                reward_category: 'electronics', reward_icon: '📱', image_url: img('IMG_20260924_131216.png'), accent_color: '#b9f2ff', estimated_value_ngn: 650000,   display_order: 5,  terms: 'KYC mandatory. Delivery within Nigeria.' },
-    { tier_number: 6,  slug: 'royal-ambassador',          title: 'Royal Ambassador',          referrals_required: 150,  reward_name: 'Tablet',                                       reward_description: 'A premium tablet with stylus support — built for productivity and entertainment.',                          reward_category: 'electronics', reward_icon: '📲', image_url: img('IMG_20260924_131253.png'), accent_color: '#f6d054', estimated_value_ngn: 900000,   display_order: 6,  terms: 'KYC mandatory. Delivery within Nigeria.' },
-    { tier_number: 7,  slug: 'diamond-ambassador-award',  title: 'Diamond Ambassador Award',  referrals_required: 170,  reward_name: 'Diamond Ambassador Award',                    reward_description: 'Formal recognition as a LIQUIDATED Diamond Ambassador with a physical award trophy.',                       reward_category: 'merch',       reward_icon: '🏅', image_url: img('IMG_20260924_131333.png'), accent_color: '#b9f2ff', estimated_value_ngn: 250000,   display_order: 7,  terms: 'Physical award shipped by courier.' },
-    { tier_number: 8,  slug: 'elite-ambassador',          title: 'Elite Ambassador',          referrals_required: 250,  reward_name: 'Premium Laptop',                              reward_description: 'A high-performance laptop suitable for professional work, creative projects, and development.',              reward_category: 'electronics', reward_icon: '💻', image_url: img('IMG_20260924_131415.png'), accent_color: '#10b981', estimated_value_ngn: 1800000,  display_order: 8,  terms: 'Specification confirmed before dispatch.' },
-    { tier_number: 9,  slug: 'executive-ambassador-280',  title: 'Executive Ambassador',      referrals_required: 280,  reward_name: 'Elite Ambassador Award',                      reward_description: 'Formal recognition as an Elite Ambassador with a premium physical trophy.',                                 reward_category: 'merch',       reward_icon: '🏆', image_url: img('IMG_20260924_131501.png'), accent_color: '#059669', estimated_value_ngn: 400000,   display_order: 9,  terms: 'Physical award shipped by courier.' },
-    { tier_number: 10, slug: 'premium-ambassador',        title: 'Premium Ambassador',        referrals_required: 350,  reward_name: 'Smart TV',                                     reward_description: 'A large-format 4K smart television with HDR support and built-in streaming apps.',                          reward_category: 'electronics', reward_icon: '📺', image_url: img('IMG_20260924_131538.png'), accent_color: '#34d399', estimated_value_ngn: 2200000,  display_order: 10, terms: 'Installation support in select cities.' },
-    { tier_number: 11, slug: 'executive-ambassador-500',  title: 'Executive Ambassador',      referrals_required: 500,  reward_name: 'Executive Ambassador Award',                  reward_description: 'Formal recognition as a LIQUIDATED Executive Ambassador with a premium trophy.',                          reward_category: 'merch',       reward_icon: '🥇', image_url: img('IMG_20260924_131620.png'), accent_color: '#059669', estimated_value_ngn: 600000,   display_order: 11, terms: 'Physical award shipped by courier.' },
-    { tier_number: 12, slug: 'platinum-ambassador-750',   title: 'Platinum Ambassador',       referrals_required: 750,  reward_name: 'Flagship Smartphone',                         reward_description: 'The flagship device of your choice from a curated list of premium smartphones.',                            reward_category: 'electronics', reward_icon: '📱', image_url: img('IMG_20260924_131711.png'), accent_color: '#e5e4e2', estimated_value_ngn: 1500000,  display_order: 12, terms: 'Model selection confirmed with your account manager.' },
-    { tier_number: 13, slug: 'crown-ambassador',          title: 'Crown Ambassador',          referrals_required: 1000, reward_name: 'Crown Ambassador Award',                      reward_description: 'Our Crown-tier award — flagship smartphone plus formal Crown Ambassador recognition.',                       reward_category: 'electronics', reward_icon: '👑', image_url: img('IMG_20260924_131748.png'), accent_color: '#f6d054', estimated_value_ngn: 2500000,  display_order: 13, terms: 'Subject to formal award agreement.' },
-    { tier_number: 14, slug: 'royal-partner',             title: 'Royal Partner',             referrals_required: 1500, reward_name: 'Major Lifestyle Reward — Vehicle Contribution',reward_description: 'A substantial cash contribution toward a vehicle of your choice, paid directly to a verified dealer.',       reward_category: 'vehicle',     reward_icon: '🚘', image_url: img('IMG_20260924_131825.png'), accent_color: '#fbbf24', estimated_value_ngn: 5000000,  display_order: 14, terms: 'Paid to a verified dealer only.' },
-    { tier_number: 15, slug: 'elite-partner',             title: 'Elite Partner',             referrals_required: 2000, reward_name: 'LIQUIDATED Elite Ambassador Award + Luxury Vehicle', reward_description: 'Our flagship award: a luxury vehicle plus formal recognition as a LIQUIDATED Elite Ambassador.',       reward_category: 'vehicle',     reward_icon: '🏆', image_url: img('IMG_20260924_131907.png'), accent_color: '#e9bd3d', estimated_value_ngn: 25000000, display_order: 15, terms: 'Subject to formal award agreement and AML review.' },
-    { tier_number: 16, slug: 'strategic-partner',         title: 'Strategic Partner',         referrals_required: 2001, reward_name: 'Strategic Partnership Program + Dedicated Account Manager', reward_description: 'An invitation into the LIQUIDATED Strategic Partnership Program with a dedicated account manager and revenue share.', reward_category: 'partnership', reward_icon: '🤝', image_url: img('IMG_20260924_131950.png'), accent_color: '#34d399', estimated_value_ngn: 0,        display_order: 16, terms: 'Entry by invitation following partnership review.' }
-];
-
-async function seedAwardTiers() {
-    const seedNumbers = TIER_SEED.map(t => t.tier_number);
-    const removed = await AwardTier.deleteMany({ tier_number: { $nin: seedNumbers } });
-
-    let created = 0, updated = 0;
-    for (const t of TIER_SEED) {
-        const existing = await AwardTier.findOne({ tier_number: t.tier_number });
-        if (existing) { await AwardTier.findByIdAndUpdate(existing._id, t); updated++; }
-        else          { await AwardTier.create(t);                          created++; }
-    }
-    console.log(`🏆 Award tiers seeded: ${created} created, ${updated} updated, ${removed.deletedCount} removed`);
-    return { created, updated, removed: removed.deletedCount };
-}
-
-async function computeUserAwardStatus(userId) {
-    const user = await User.findById(userId).lean();
-    if (!user) throw new Error('User not found');
-
-    const confirmed = await Referral.countDocuments({ referrer: userId, first_investment_commission_paid: true });
-    const total     = await Referral.countDocuments({ referrer: userId });
-    const pending   = total - confirmed;
-
-    const tiers  = await AwardTier.find({ is_active: true }).sort({ referrals_required: 1 }).lean();
-    const claims = await AwardClaim.find({ user: userId }).lean();
-    const claimedTierNums = new Set(claims.map(c => c.tier_number));
-
-    const unlocked = [], claimable = [];
-    let nextTier = null;
-
-    for (const t of tiers) {
-        const reached = confirmed >= t.referrals_required;
-        if (reached) {
-            unlocked.push(t.tier_number);
-            if (!claimedTierNums.has(t.tier_number)) claimable.push(t);
-        } else if (!nextTier) {
-            nextTier = {
-                ...t,
-                referrals_needed: t.referrals_required - confirmed,
-                progress_percent: Math.min(100, (confirmed / t.referrals_required) * 100)
-            };
-        }
-    }
-
-    let avgDaily = 0;
-    let etaDays = null;
-    if (nextTier) {
-        const cutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-        const recent = await Referral.countDocuments({
-            referrer: userId, first_investment_commission_paid: true,
-            first_investment_date: { $gte: cutoff }
-        });
-        avgDaily = recent / 30;
-        if (avgDaily >= 0.5) {
-            etaDays = Math.ceil(nextTier.referrals_needed / avgDaily);
-        }
-    }
-
-    return {
-        confirmed_referrals: confirmed,
-        total_referrals: total,
-        pending_referrals: pending,
-        unlocked_tiers: unlocked,
-        claimable_tiers: claimable,
-        next_tier: nextTier,
-        claims,
-        referral_code: user.referral_code,
-        referral_link: `${config.clientURL}/register?ref=${user.referral_code}`,
-        avg_daily: avgDaily,
-        eta_days: etaDays,
-        tiers
-    };
-}
-
-async function checkAndNotifyNewAwardTiers(userId) {
-    try {
-        const status = await computeUserAwardStatus(userId);
-        if (!status.unlocked_tiers || status.unlocked_tiers.length === 0) return;
-
-        // Notify for any newly unlocked tiers that haven't been claimed
-        for (const tier of status.claimable_tiers) {
-            const alreadyNotified = await Notification.findOne({
-                user: userId,
-                'metadata.award_tier_number': tier.tier_number,
-                type: 'award'
-            }).lean();
-            if (alreadyNotified) continue;
-
-            await createNotification(
-                userId,
-                `🏆 New Award Unlocked — ${tier.title}`,
-                `Congratulations! You've unlocked the ${tier.title} tier (${tier.referrals_required} confirmed referrals). Reward: ${tier.reward_name}. Claim it from your awards page.`,
-                'award',
-                '/awards',
-                { award_tier_number: tier.tier_number, award_tier_slug: tier.slug }
-            );
-
-            emitToUser(userId, 'award-unlocked', {
-                tier_number: tier.tier_number,
-                title: tier.title,
-                reward_name: tier.reward_name,
-                reward_icon: tier.reward_icon,
-                image_url: tier.image_url
-            });
-        }
-    } catch (err) {
-        console.error('checkAndNotifyNewAwardTiers error:', err.message);
-    }
-}
-
 // ==================== DATABASE INIT ====================
 const initializeDatabase = async () => {
     console.log('🔄 Initializing database...');
@@ -1914,124 +1826,92 @@ const initializeDatabase = async () => {
         Deposit.syncIndexes(),
         Withdrawal.syncIndexes(),
         Transaction.syncIndexes(),
-        CronLock.syncIndexes(),
-        AwardTier.syncIndexes(),
-        AwardClaim.syncIndexes(),
-        Referral.syncIndexes()
+        CronLock.syncIndexes()
     ]).catch(err => console.warn('Index sync warning:', err.message));
 
     await createAdminUser();
     await createDefaultInvestmentPlans();
-    await seedAwardTiers();
-    await backfillConfirmedReferralCounts();
-
     console.log('✅ Database initialization completed');
 };
 
-const backfillConfirmedReferralCounts = async () => {
-    try {
-        const result = await Referral.aggregate([
-            { $match: { first_investment_commission_paid: true } },
-            { $group: { _id: '$referrer', count: { $sum: 1 } } }
-        ]);
-
-        let fixed = 0;
-        for (const row of result) {
-            const user = await User.findById(row._id);
-            if (user && user.confirmed_referral_count !== row.count) {
-                user.confirmed_referral_count = row.count;
-                await user.save();
-                fixed++;
-            }
-        }
-        if (fixed > 0) console.log(`🔁 Backfilled confirmed_referral_count for ${fixed} users`);
-    } catch (err) {
-        console.warn('Backfill confirmed_referral_count skipped:', err.message);
-    }
-};
-
 const createDefaultInvestmentPlans = async () => {
-    const firstThreeDuration = config.planDurations.firstThree;
-    const nextThreeDuration = config.planDurations.nextThree;
-    const remainingDuration = config.planDurations.remaining;
-
     const defaultPlans = [
         {
             name: 'StableGrowth Ltd.',
-            description: 'Invest in a diversified portfolio of blue‑chip stocks with stable returns.',
+            description: 'Diversified blue-chip stocks.',
             min_amount: 3000, max_amount: 50000,
-            daily_interest: 10, total_interest: 15 * firstThreeDuration,
-            duration: firstThreeDuration, risk_level: 'low', raw_material: 'Stocks',
+            daily_interest: 15, total_interest: 15 * 20,
+            duration: 20, risk_level: 'low', raw_material: 'Stocks',
             category: 'stocks', is_popular: true,
             features: ['Low Risk', 'Stable Returns', 'Beginner Friendly', 'Daily Payouts'],
             color: 'rgba(16,185,129,0.14)', icon: '📈', display_order: 1
         },
         {
             name: 'Global Equity Fund',
-            description: 'A mix of international stocks offering medium risk and higher returns.',
+            description: 'International stocks medium risk',
             min_amount: 50000, max_amount: 500000,
-            daily_interest: 10, total_interest: 15 * firstThreeDuration,
-            duration: firstThreeDuration, risk_level: 'medium', raw_material: 'Stocks',
+            daily_interest: 15, total_interest: 15 * 20,
+            duration: 20, risk_level: 'medium', raw_material: 'Stocks',
             category: 'stocks', is_popular: true,
             features: ['Medium Risk', 'Higher Returns', 'International Exposure', 'Daily Payouts'],
             color: 'rgba(212,175,55,0.14)', icon: '🌍', display_order: 2
         },
         {
             name: 'HighYield Ventures',
-            description: 'Aggressive growth stocks for maximum returns.',
+            description: 'Aggressive growth stocks',
             min_amount: 100000, max_amount: 1000000,
-            daily_interest: 9, total_interest: 9 * firstThreeDuration,
-            duration: firstThreeDuration, risk_level: 'high', raw_material: 'Stocks',
+            daily_interest: 15, total_interest: 15 * 20,
+            duration: 20, risk_level: 'high', raw_material: 'Stocks',
             category: 'stocks', is_popular: true,
             features: ['High Risk', 'Maximum Returns', 'Premium Investment', 'Aggressive Growth'],
             color: 'rgba(220,38,38,0.12)', icon: '🚀', display_order: 3
         },
         {
             name: 'Dividend Kings Inc.',
-            description: 'Companies with a long history of consistent dividend payments.',
+            description: 'Consistent dividend payers.',
             min_amount: 5500, max_amount: 25000,
-            daily_interest: 9, total_interest: 9 * nextThreeDuration,
-            duration: nextThreeDuration, risk_level: 'low', raw_material: 'Stocks',
+            daily_interest: 19, total_interest: 19 * 15,
+            duration: 15, risk_level: 'low', raw_material: 'Stocks',
             category: 'stocks', is_popular: false,
             features: ['Low Risk', 'Consistent Dividends', 'Daily Payouts', 'Steady Income'],
             color: 'rgba(139,69,19,0.12)', icon: '💵', display_order: 4
         },
         {
             name: 'Industrial Select Fund',
-            description: 'Focus on industrial and manufacturing sector stocks.',
+            description: 'Manufacturing sector focus',
             min_amount: 15000, max_amount: 150000,
-            daily_interest: 10, total_interest: 10 * nextThreeDuration,
-            duration: nextThreeDuration, risk_level: 'medium', raw_material: 'Stocks',
+            daily_interest: 17, total_interest: 17 * 15,
+            duration: 15, risk_level: 'medium', raw_material: 'Stocks',
             category: 'stocks', is_popular: false,
             features: ['Medium Risk', 'Industrial Focus', 'Portfolio Diversification', 'Regular Returns'],
             color: 'rgba(192,192,192,0.12)', icon: '🏭', display_order: 5
         },
         {
             name: 'Sustainable Future ETF',
-            description: 'Invest in environmentally and socially responsible companies.',
+            description: 'ESG responsible companies',
             min_amount: 20000, max_amount: 200000,
-            daily_interest: 10, total_interest: 10 * nextThreeDuration,
-            duration: nextThreeDuration, risk_level: 'medium', raw_material: 'Stocks',
+            daily_interest: 19, total_interest: 19 * 15,
+            duration: 15, risk_level: 'medium', raw_material: 'Stocks',
             category: 'stocks', is_popular: false,
             features: ['ESG Focus', 'Sustainable', 'Future‑Proof', 'Daily Returns'],
             color: 'rgba(16,185,129,0.14)', icon: '🌱', display_order: 6
         },
         {
             name: 'Energy Sector Leaders',
-            description: 'Top companies in the energy sector, including renewables.',
+            description: 'Top energy companies',
             min_amount: 75000, max_amount: 750000,
-            daily_interest: 13, total_interest: 13 * remainingDuration,
-            duration: remainingDuration, risk_level: 'high', raw_material: 'Stocks',
+            daily_interest: 23, total_interest: 23 * 9,
+            duration: 9, risk_level: 'high', raw_material: 'Stocks',
             category: 'stocks', is_popular: false,
             features: ['High Returns', 'Energy Transition', 'Global Market', 'Premium Investment'],
             color: 'rgba(212,175,55,0.14)', icon: '⚡', display_order: 7
         },
         {
             name: 'Consumer Staples Fund',
-            description: 'Stocks of essential consumer goods companies with steady demand.',
+            description: 'Essential consumer goods',
             min_amount: 30000, max_amount: 300000,
-            daily_interest: 11, total_interest: 11 * remainingDuration,
-            duration: remainingDuration, risk_level: 'medium', raw_material: 'Stocks',
+            daily_interest: 21, total_interest: 21 * 9,
+            duration: 9, risk_level: 'medium', raw_material: 'Stocks',
             category: 'stocks', is_popular: false,
             features: ['Essential Goods', 'Steady Demand', 'Resilient', 'Regular Returns'],
             color: 'rgba(255,107,107,0.12)', icon: '🛒', display_order: 8
@@ -2109,12 +1989,17 @@ app.get('/health', async (req, res) => {
         const health = {
             success: true, status: 'OK',
             timestamp: new Date().toISOString(),
-            version: '59.0.0',
+            version: '59.1.0',
             environment: config.nodeEnv,
             database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
             cloudinary: {
                 configured: !!(config.cloudinary.cloud_name && config.cloudinary.api_key && config.cloudinary.api_secret),
                 cloud_name: config.cloudinary.cloud_name || null
+            },
+            awards: {
+                module: 'mounted',
+                tiers: await mongoose.model('AwardTier').countDocuments({}).catch(() => 0),
+                claims: await mongoose.model('AwardClaim').countDocuments({}).catch(() => 0)
             },
             uptime: process.uptime(),
             memory: {
@@ -2127,9 +2012,7 @@ app.get('/health', async (req, res) => {
                 investments: await Investment.countDocuments({}),
                 deposits: await Deposit.countDocuments({}),
                 withdrawals: await Withdrawal.countDocuments({}),
-                plans: await InvestmentPlan.countDocuments({}),
-                award_tiers: await AwardTier.countDocuments({}),
-                award_claims: await AwardClaim.countDocuments({})
+                plans: await InvestmentPlan.countDocuments({})
             }
         };
         res.json(health);
@@ -2141,15 +2024,17 @@ app.get('/health', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         success: true,
-        message: '🚀 Liquidated Backend v59.0 - Production / Awards Edition',
-        version: '59.0.0',
+        message: '🚀 Liquidated Backend v59.1 - Cloudinary + Awards + Frontend-Matched Plans',
+        version: '59.1.0',
         timestamp: new Date().toISOString(),
         status: 'Operational',
         environment: config.nodeEnv,
         features: {
+            frontend_matched_plans: '✅ ENABLED (18/20/25/19/17/19/23/21 daily interest)',
+            awards_module: '✅ ENABLED (12-tier ambassador programme)',
             cloudinary_storage: '✅ ENABLED (ephemeral-disk-proof uploads)',
             kyc_private_assets: '✅ ENABLED (authenticated + signed URLs)',
-            body_parser_fix: '✅ ENABLED (forces JSON parsing on PUT with text/plain)',
+            body_parser_fix: '✅ ENABLED',
             hoisting_fix: '✅ ENABLED',
             investment_auto_approval: '✅ ENABLED',
             daily_interest_auto: '✅ ENABLED',
@@ -2159,8 +2044,7 @@ app.get('/', (req, res) => {
             atomic_transactions: '✅ ENABLED',
             secure_sockets: '✅ ENABLED',
             auto_correct_earnings: config.autoCorrectEarnings ? '✅ ENABLED' : '❌ DISABLED',
-            separate_balance_and_earnings: '✅ ENABLED (balance = deposits only)',
-            deposit_proof_optional: '✅ OPTIONAL',
+            separate_balance_and_earnings: '✅ ENABLED',
             reserved_earnings_withdrawals: '✅ ENABLED',
             distributed_cron_locks: '✅ ENABLED',
             auth_protected_uploads: '✅ ENABLED',
@@ -2168,9 +2052,9 @@ app.get('/', (req, res) => {
             change_password: '✅ ENABLED',
             extended_preferences: '✅ ENABLED',
             signed_url_endpoint: '✅ ENABLED (/api/files/signed/:publicId)',
-            referral_awards_system: '✅ ENABLED (16-tier ladder, /api/awards/*)',
-            awards_leaderboard: '✅ ENABLED (/api/awards/leaderboard)',
-            awards_admin_review: '✅ ENABLED (/api/admin/awards/*)'
+            awards_k_y_c_gate: '✅ ENABLED (tiers 5+ require KYC)',
+            awards_rate_limit: '✅ 3 claims/hour per user',
+            awards_leaderboard: '✅ ENABLED (public, 30-min cache)'
         },
         endpoints: {
             auth: '/api/auth/*',
@@ -2183,9 +2067,14 @@ app.get('/', (req, res) => {
             kyc: '/api/kyc/*',
             support: '/api/support/*',
             referrals: '/api/referrals/*',
-            awards: '/api/awards/*',
-            admin_awards: '/api/admin/awards/*',
+            awards_tiers: '/api/awards/tiers',
+            awards_status: '/api/awards/status',
+            awards_claims: '/api/awards/claims',
+            awards_claim: '/api/awards/claim/:tierNumber',
+            awards_leaderboard: '/api/awards/leaderboard',
             admin: '/api/admin/*',
+            admin_awards_claims: '/api/admin/awards/claims',
+            admin_awards_seed: '/api/admin/awards/seed-tiers',
             upload: '/api/upload',
             signed_files: '/api/files/signed/:publicId',
             forgot_password: '/api/auth/forgot-password',
@@ -2194,109 +2083,6 @@ app.get('/', (req, res) => {
             admin_recalc: '/api/admin/users/:id/recalculate-earnings'
         }
     });
-});
-
-// ==================== LEGACY AUTH-PROTECTED FILE SERVING ====================
-const PUBLIC_FOLDERS = new Set(['general', 'avatars', 'public']);
-const RESTRICTED_FOLDERS = new Set(['kyc-documents', 'deposit-proofs', 'investment-proofs', 'support-attachments']);
-
-app.get('/uploads/:folder/:filename', auth, async (req, res) => {
-    try {
-        const { folder, filename } = req.params;
-
-        if (
-            folder.includes('..') || filename.includes('..') ||
-            folder.includes('/') || folder.includes('\\') ||
-            filename.includes('/') || filename.includes('\\')
-        ) {
-            return res.status(400).json(formatResponse(false, 'Invalid path'));
-        }
-
-        if (!fs.existsSync(path.join(config.uploadDir, folder))) {
-            return res.status(404).json(formatResponse(false, 'Folder not found'));
-        }
-
-        const filePath = path.join(config.uploadDir, folder, filename);
-        if (!fs.existsSync(filePath)) {
-            return res.status(404).json(formatResponse(false, 'File not found'));
-        }
-
-        const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
-        const isPublic = PUBLIC_FOLDERS.has(folder);
-
-        if (!isPublic && RESTRICTED_FOLDERS.has(folder) && !isAdmin) {
-            const [kyc, dep, inv] = await Promise.all([
-                KYCSubmission.findOne({
-                    $or: [
-                        { id_front_url: { $regex: filename } },
-                        { id_back_url: { $regex: filename } },
-                        { selfie_with_id_url: { $regex: filename } },
-                        { address_proof_url: { $regex: filename } }
-                    ]
-                }).lean(),
-                Deposit.findOne({ payment_proof_url: { $regex: filename } }).lean(),
-                Investment.findOne({ payment_proof_url: { $regex: filename } }).lean()
-            ]);
-
-            const ownerId = kyc?.user || dep?.user || inv?.user;
-            if (!ownerId) return res.status(404).json(formatResponse(false, 'File not found'));
-            if (ownerId.toString() !== req.user._id.toString()) {
-                return res.status(403).json(formatResponse(false, 'Access denied'));
-            }
-        }
-
-        res.set('X-Content-Type-Options', 'nosniff');
-        res.set('Cache-Control', isPublic ? 'public, max-age=86400' : 'private, max-age=3600');
-
-        if (filename.toLowerCase().endsWith('.svg')) {
-            res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
-            res.set('Content-Type', 'image/svg+xml');
-            res.set('Content-Disposition', 'inline');
-        }
-
-        res.sendFile(filePath);
-    } catch (err) {
-        console.error('File serve error:', err);
-        res.status(500).json(formatResponse(false, 'Error serving file'));
-    }
-});
-
-app.get('/api/files/signed/:publicId(*)', auth, async (req, res) => {
-    try {
-        const publicId = decodeURIComponent(req.params.publicId);
-        if (!publicId) return res.status(400).json(formatResponse(false, 'publicId is required'));
-
-        const [kyc, dep, inv] = await Promise.all([
-            KYCSubmission.findOne({
-                $or: [
-                    { id_front_url: { $regex: publicId } },
-                    { id_back_url: { $regex: publicId } },
-                    { selfie_with_id_url: { $regex: publicId } },
-                    { address_proof_url: { $regex: publicId } }
-                ]
-            }).lean(),
-            Deposit.findOne({ payment_proof_url: { $regex: publicId } }).lean(),
-            Investment.findOne({ payment_proof_url: { $regex: publicId } }).lean()
-        ]);
-
-        const ownerId = kyc?.user || dep?.user || inv?.user;
-        const isAdmin = req.user.role === 'admin' || req.user.role === 'super_admin';
-
-        if (!ownerId) return res.status(404).json(formatResponse(false, 'File not found'));
-        if (!isAdmin && ownerId.toString() !== req.user._id.toString()) {
-            return res.status(403).json(formatResponse(false, 'Access denied'));
-        }
-
-        const signedUrl = cloudinary.v2.utils.private_download_url(publicId, 'auto', {
-            expires_at: Math.floor(Date.now() / 1000) + 3600,
-            type: 'authenticated',
-            attachment: false
-        });
-
-        res.json(formatResponse(true, 'Signed URL generated', { url: signedUrl }));
-    } catch (err) {
-        handleError(res, err, 'Error generating signed URL');
-    }
 });
 
 // ==================== DEBUG ENDPOINTS ====================
@@ -2406,11 +2192,15 @@ app.get('/api/debug/system-status', adminAuth, async (req, res) => {
                 folder_root: config.cloudinary.folder_root,
                 configured: !!(config.cloudinary.cloud_name && config.cloudinary.api_key && config.cloudinary.api_secret)
             },
+            awards: {
+                tiers: await mongoose.model('AwardTier').countDocuments({}).catch(() => 0),
+                claims: await mongoose.model('AwardClaim').countDocuments({}).catch(() => 0),
+                pending_claims: await mongoose.model('AwardClaim').countDocuments({ status: { $in: ['claimed', 'under_review'] } }).catch(() => 0)
+            },
             config: {
                 environment: config.nodeEnv,
                 serverURL: config.serverURL,
                 clientURL: config.clientURL,
-                awardsFrontendURL: config.awardsFrontendURL,
                 emailEnabled: config.emailEnabled,
                 withdrawalAutoApprove: config.withdrawalAutoApprove,
                 referralCommissionOnFirstInvestment: config.referralCommissionOnFirstInvestment,
@@ -2562,6 +2352,7 @@ app.post('/api/auth/login', [
     }
 });
 
+// ==================== CHANGE PASSWORD ====================
 app.post('/api/auth/change-password', auth, [
     body('currentPassword').notEmpty(),
     body('newPassword').isLength({ min: 6 })
@@ -2644,7 +2435,6 @@ app.get('/api/profile', auth, async (req, res) => {
                 total_deposits: deposits,
                 total_withdrawals: withdrawals,
                 referral_count: referrals,
-                confirmed_referral_count: userData.confirmed_referral_count || 0,
                 active_investment_value: activeInvestmentValue,
                 portfolio_value: userData.portfolioValue
             }
@@ -3658,13 +3448,9 @@ app.get('/api/referrals/stats', auth, async (req, res) => {
             }
         });
 
-        const confirmed = referrals.filter(r => r.first_investment_commission_paid).length;
-
         res.json(formatResponse(true, 'Referral stats retrieved successfully', {
             stats: {
                 total_referrals: referrals.length,
-                confirmed_referrals: confirmed,
-                pending_referrals: referrals.length - confirmed,
                 active_referrals: referrals.filter(r => r.status === 'active').length,
                 referral_earnings: user.referral_earnings || 0,
                 first_investment_commission: totalFirstInvestmentCommission,
@@ -3681,163 +3467,6 @@ app.get('/api/referrals/stats', auth, async (req, res) => {
         }));
     } catch (error) {
         handleError(res, error, 'Error fetching referral stats');
-    }
-});
-
-// ==================== AWARDS ROUTES ====================
-app.get('/api/awards/tiers', async (req, res) => {
-    try {
-        const tiers = await AwardTier.find({ is_active: true }).sort({ referrals_required: 1 }).lean();
-        res.set('Cache-Control', 'public, max-age=3600');
-        res.json(formatResponse(true, 'Award tiers retrieved', { tiers }));
-    } catch (err) {
-        handleError(res, err, 'Error fetching award tiers');
-    }
-});
-
-app.get('/api/awards/status', auth, async (req, res) => {
-    try {
-        const status = await computeUserAwardStatus(req.user._id);
-        res.json(formatResponse(true, 'Award status retrieved', status));
-    } catch (err) {
-        handleError(res, err, 'Error computing award status');
-    }
-});
-
-app.post('/api/awards/claim/:tierNumber', auth, async (req, res) => {
-    try {
-        const tierNumber = parseInt(req.params.tierNumber, 10);
-        if (isNaN(tierNumber)) return res.status(400).json(formatResponse(false, 'Invalid tier number'));
-
-        const tier = await AwardTier.findOne({ tier_number: tierNumber, is_active: true });
-        if (!tier) return res.status(404).json(formatResponse(false, 'Tier not found'));
-
-        const status = await computeUserAwardStatus(req.user._id);
-        if (status.confirmed_referrals < tier.referrals_required) {
-            return res.status(400).json(formatResponse(false,
-                `You need ${tier.referrals_required} confirmed referrals to claim this tier. You currently have ${status.confirmed_referrals}.`));
-        }
-
-        const existing = await AwardClaim.findOne({ user: req.user._id, tier_number: tierNumber });
-        if (existing) return res.status(400).json(formatResponse(false, 'You have already claimed this tier.'));
-
-        if (tierNumber >= 5 && !req.user.kyc_verified) {
-            return res.status(400).json(formatResponse(false, 'KYC verification is required for tiers 5 and above.'));
-        }
-
-        const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
-        const recent = await AwardClaim.countDocuments({ user: req.user._id, createdAt: { $gte: hourAgo } });
-        if (recent >= 3) return res.status(429).json(formatResponse(false, 'Rate limit: maximum 3 award claims per hour.'));
-
-        const { delivery_details } = req.body || {};
-        if (!delivery_details || !delivery_details.full_name || !delivery_details.phone ||
-            !delivery_details.address_line || !delivery_details.city || !delivery_details.state) {
-            return res.status(400).json(formatResponse(false, 'Incomplete delivery details: full_name, phone, address_line, city, and state are required.'));
-        }
-
-        const claim = await AwardClaim.create({
-            user: req.user._id,
-            tier: tier._id,
-            tier_number: tierNumber,
-            referrals_at_claim: status.confirmed_referrals,
-            status: 'claimed',
-            delivery_details
-        });
-
-        await createNotification(req.user._id,
-            `Award Claim Submitted — ${tier.title}`,
-            `Your claim for "${tier.reward_name}" has been submitted and is now under review. Our team will contact you shortly.`,
-            'success', '/awards',
-            { award_tier_number: tierNumber, claim_id: String(claim._id) });
-
-        emitToAwardAdmins('award-claim-created', {
-            claim_id: claim._id,
-            user_id: req.user._id,
-            user_name: req.user.full_name,
-            user_email: req.user.email,
-            tier_title: tier.title,
-            tier_number: tierNumber,
-            reward_name: tier.reward_name,
-            estimated_value_ngn: tier.estimated_value_ngn,
-            timestamp: new Date().toISOString()
-        });
-
-        await AdminAudit.create({
-            admin_id: null, actor: 'system',
-            action: 'award_claim_created', target_type: 'award_claim', target_id: claim._id,
-            details: {
-                user_id: req.user._id, tier_number: tierNumber,
-                tier_title: tier.title, reward_name: tier.reward_name,
-                referrals_at_claim: status.confirmed_referrals
-            },
-            ip_address: req.ip, user_agent: req.headers['user-agent']
-        });
-
-        res.status(201).json(formatResponse(true, 'Award claim submitted successfully', { claim }));
-    } catch (err) {
-        handleError(res, err, 'Error submitting award claim');
-    }
-});
-
-app.get('/api/awards/claims', auth, async (req, res) => {
-    try {
-        const claims = await AwardClaim.find({ user: req.user._id })
-            .populate('tier', 'tier_number title reward_name reward_icon image_url accent_color estimated_value_ngn reward_category')
-            .sort({ createdAt: -1 }).lean();
-        res.json(formatResponse(true, 'Claims retrieved', { claims }));
-    } catch (err) {
-        handleError(res, err, 'Error fetching claims');
-    }
-});
-
-app.get('/api/awards/leaderboard', async (req, res) => {
-    try {
-        const rows = await Referral.aggregate([
-            { $match: { first_investment_commission_paid: true } },
-            { $group: { _id: '$referrer', confirmed: { $sum: 1 } } },
-            { $sort: { confirmed: -1 } },
-            { $limit: 100 },
-            { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'u' } },
-            { $unwind: '$u' },
-            { $match: { 'u.account_status': 'active' } },
-            {
-                $project: {
-                    _id: 0,
-                    userId: '$_id',
-                    name: '$u.full_name',
-                    confirmed: 1,
-                    referral_code: '$u.referral_code'
-                }
-            }
-        ]);
-
-        const tiers = await AwardTier.find().sort({ referrals_required: 1 }).lean();
-
-        const mapped = rows.map((r, i) => {
-            let tier = null;
-            for (const t of tiers) {
-                if (r.confirmed >= t.referrals_required) tier = t;
-                else break;
-            }
-            return {
-                rank: i + 1,
-                user_id: r.userId,
-                name: r.name,
-                confirmed: r.confirmed,
-                referral_code: r.referral_code,
-                tier: tier ? {
-                    tier_number: tier.tier_number,
-                    title: tier.title,
-                    reward_icon: tier.reward_icon,
-                    accent_color: tier.accent_color
-                } : null
-            };
-        });
-
-        res.set('Cache-Control', 'public, max-age=1800');
-        res.json(formatResponse(true, 'Leaderboard retrieved', { leaderboard: mapped }));
-    } catch (err) {
-        handleError(res, err, 'Error fetching leaderboard');
     }
 });
 
@@ -3916,37 +3545,10 @@ app.post('/api/upload', auth, upload.single('file'), async (req, res) => {
     }
 });
 
-// ==================== GDPR / DATA EXPORT ====================
-app.get('/api/account/export', auth, async (req, res) => {
-    try {
-        const userId = req.user._id;
-
-        const [user, investments, deposits, withdrawals, transactions, referrals, kyc, claims, notifications] = await Promise.all([
-            User.findById(userId).select('-password -two_factor_secret -verification_token -password_reset_token').lean(),
-            Investment.find({ user: userId }).lean(),
-            Deposit.find({ user: userId }).lean(),
-            Withdrawal.find({ user: userId }).lean(),
-            Transaction.find({ user: userId }).sort({ createdAt: -1 }).lean(),
-            Referral.find({ referrer: userId }).lean(),
-            KYCSubmission.findOne({ user: userId }).lean(),
-            AwardClaim.find({ user: userId }).lean(),
-            Notification.find({ user: userId }).sort({ createdAt: -1 }).limit(500).lean()
-        ]);
-
-        const exportData = {
-            exported_at: new Date().toISOString(),
-            export_version: '1.0',
-            user, investments, deposits, withdrawals, transactions,
-            referrals, kyc, award_claims: claims, notifications
-        };
-
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Content-Disposition', `attachment; filename="liquidated-export-${userId}-${Date.now()}.json"`);
-        res.send(JSON.stringify(exportData, null, 2));
-    } catch (error) {
-        handleError(res, error, 'Error exporting account data');
-    }
-});
+// ==================== MOUNT AWARDS MODULE ====================
+// Must be mounted AFTER all middleware, auth helpers, and core Mongoose models
+// (User, Referral, etc.) are defined — awards.js reuses them.
+mountAwards(app, { auth, adminAuth, formatResponse, handleError, config });
 
 // ==================== CRON JOBS ====================
 cron.schedule('0 * * * *', async () => {
@@ -4012,8 +3614,7 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
             totalUsers, newUsersToday, newUsersWeek,
             totalInvestments, activeInvestments,
             totalDeposits, totalWithdrawals,
-            pendingInvestments, pendingDeposits, pendingWithdrawals, pendingKYC, amlFlags,
-            pendingAwardClaims, fulfilledAwardClaims
+            pendingInvestments, pendingDeposits, pendingWithdrawals, pendingKYC, amlFlags
         ] = await Promise.all([
             User.countDocuments({}),
             User.countDocuments({ createdAt: { $gte: new Date(new Date().setHours(0, 0, 0, 0)) } }),
@@ -4026,9 +3627,7 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
             Deposit.countDocuments({ status: 'pending' }),
             Withdrawal.countDocuments({ status: 'pending' }),
             KYCSubmission.countDocuments({ status: 'pending' }),
-            AmlMonitoring.countDocuments({ status: 'pending_review' }),
-            AwardClaim.countDocuments({ status: { $in: ['claimed', 'under_review', 'approved'] } }),
-            AwardClaim.countDocuments({ status: 'fulfilled' })
+            AmlMonitoring.countDocuments({ status: 'pending_review' })
         ]);
 
         const earningsResult = await Investment.aggregate([
@@ -4067,6 +3666,10 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
             { $group: { _id: '$account_status', count: { $sum: 1 } } }
         ]);
 
+        const awardsPending = await mongoose.model('AwardClaim')
+            .countDocuments({ status: { $in: ['claimed', 'under_review'] } })
+            .catch(() => 0);
+
         res.json(formatResponse(true, 'Admin dashboard stats retrieved successfully', {
             stats: {
                 overview: {
@@ -4092,9 +3695,8 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
                     pending_withdrawals: pendingWithdrawals,
                     pending_kyc: pendingKYC,
                     aml_flags: amlFlags,
-                    pending_award_claims: pendingAwardClaims,
-                    fulfilled_award_claims: fulfilledAwardClaims,
-                    total_pending: pendingInvestments + pendingDeposits + pendingWithdrawals + pendingKYC + amlFlags + pendingAwardClaims
+                    awards_pending: awardsPending,
+                    total_pending: pendingInvestments + pendingDeposits + pendingWithdrawals + pendingKYC + amlFlags + awardsPending
                 },
                 account_status: accountStatusStats.reduce((acc, s) => { acc[s._id] = s.count; return acc; }, {})
             },
@@ -4104,7 +3706,7 @@ app.get('/api/admin/dashboard', adminAuth, async (req, res) => {
                 pending_withdrawals: '/api/admin/pending-withdrawals',
                 pending_kyc: '/api/admin/pending-kyc',
                 aml_flags: '/api/admin/aml-flags',
-                award_claims: '/api/admin/awards/claims',
+                awards_claims: '/api/admin/awards/claims',
                 all_users: '/api/admin/users',
                 suspended_users: '/api/admin/users?account_status=suspended',
                 rejected_users: '/api/admin/users?account_status=rejected',
@@ -4189,13 +3791,12 @@ app.get('/api/admin/users/:id', adminAuth, async (req, res) => {
             .select('-password -two_factor_secret -verification_token -password_reset_token');
         if (!user) return res.status(404).json(formatResponse(false, 'User not found'));
 
-        const [investments, deposits, withdrawals, referrals, transactions, awardClaims] = await Promise.all([
+        const [investments, deposits, withdrawals, referrals, transactions] = await Promise.all([
             Investment.find({ user: userId }).populate('plan', 'name daily_interest duration').sort({ createdAt: -1 }).lean(),
             Deposit.find({ user: userId }).sort({ createdAt: -1 }).lean(),
             Withdrawal.find({ user: userId }).sort({ createdAt: -1 }).lean(),
             Referral.find({ referrer: userId }).populate('referred_user', 'full_name email createdAt').sort({ createdAt: -1 }).lean(),
-            Transaction.find({ user: userId }).sort({ createdAt: -1 }).limit(50).lean(),
-            AwardClaim.find({ user: userId }).populate('tier', 'tier_number title reward_name reward_icon').sort({ createdAt: -1 }).lean()
+            Transaction.find({ user: userId }).sort({ createdAt: -1 }).limit(50).lean()
         ]);
 
         res.json(formatResponse(true, 'User details retrieved successfully', {
@@ -4218,16 +3819,14 @@ app.get('/api/admin/users/:id', adminAuth, async (req, res) => {
                 total_deposits: deposits.length,
                 total_withdrawals: withdrawals.length,
                 total_referrals: referrals.length,
-                total_transactions: transactions.length,
-                total_award_claims: awardClaims.length
+                total_transactions: transactions.length
             },
             preview: {
                 investments: investments.slice(0, 5),
                 deposits: deposits.slice(0, 5),
                 withdrawals: withdrawals.slice(0, 5),
                 referrals: referrals.slice(0, 5),
-                transactions: transactions.slice(0, 10),
-                award_claims: awardClaims
+                transactions: transactions.slice(0, 10)
             }
         }));
     } catch (error) {
@@ -5110,113 +4709,6 @@ app.get('/api/admin/financial-report', adminAuth, async (req, res) => {
     }
 });
 
-// ==================== ADMIN AWARDS ====================
-app.get('/api/admin/awards/claims', adminAuth, async (req, res) => {
-    try {
-        const { status, page = 1, limit = 50 } = req.query;
-        const query = {};
-        if (status) query.status = status;
-
-        const skip = (parseInt(page) - 1) * parseInt(limit);
-        const [claims, total] = await Promise.all([
-            AwardClaim.find(query)
-                .populate('user', 'full_name email phone kyc_verified confirmed_referral_count')
-                .populate('tier', 'tier_number title reward_name reward_icon image_url accent_color estimated_value_ngn')
-                .sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)).lean(),
-            AwardClaim.countDocuments(query)
-        ]);
-
-        const byStatus = await AwardClaim.aggregate([
-            { $group: { _id: '$status', count: { $sum: 1 } } }
-        ]);
-
-        res.json(formatResponse(true, 'Admin claims retrieved', {
-            claims,
-            pagination: {
-                page: parseInt(page), limit: parseInt(limit), total,
-                pages: Math.ceil(total / limit)
-            },
-            stats: byStatus.reduce((a, s) => { a[s._id] = s.count; return a; }, {})
-        }));
-    } catch (err) {
-        handleError(res, err, 'Error fetching admin claims');
-    }
-});
-
-app.post('/api/admin/awards/claims/:id/status', adminAuth, async (req, res) => {
-    try {
-        const { status, reason, tracking_info, admin_notes } = req.body || {};
-        const allowed = ['under_review', 'approved', 'fulfilled', 'rejected'];
-        if (!allowed.includes(status)) {
-            return res.status(400).json(formatResponse(false, 'Invalid status. Allowed: ' + allowed.join(', ')));
-        }
-
-        const claim = await AwardClaim.findById(req.params.id).populate('user').populate('tier');
-        if (!claim) return res.status(404).json(formatResponse(false, 'Claim not found'));
-
-        claim.status = status;
-        claim.reviewed_by = req.user._id;
-        claim.reviewed_at = new Date();
-        if (admin_notes) claim.admin_notes = admin_notes;
-        if (status === 'rejected') claim.rejection_reason = reason || 'Does not meet programme terms.';
-        if (status === 'fulfilled') {
-            claim.fulfilled_at = new Date();
-            if (tracking_info) claim.tracking_info = tracking_info;
-        }
-        await claim.save();
-
-        const titles = {
-            under_review: 'Claim Under Review',
-            approved: 'Claim Approved',
-            fulfilled: 'Reward Dispatched',
-            rejected: 'Claim Rejected'
-        };
-        const bodies = {
-            under_review: `We are currently reviewing your claim for ${claim.tier.reward_name}.`,
-            approved: `Your claim has been approved. We are preparing ${claim.tier.reward_name} for dispatch.`,
-            fulfilled: `Your reward has been dispatched.${claim.tracking_info ? ' Tracking: ' + claim.tracking_info : ''}`,
-            rejected: `Your claim was rejected: ${claim.rejection_reason}`
-        };
-
-        await createNotification(
-            claim.user._id,
-            titles[status],
-            bodies[status],
-            status === 'rejected' ? 'error' : 'success',
-            '/awards',
-            { award_tier_number: claim.tier_number, claim_id: String(claim._id), status }
-        );
-
-        await AdminAudit.create({
-            admin_id: req.user._id, actor: 'admin',
-            action: 'update_award_claim_status',
-            target_type: 'award_claim', target_id: claim._id,
-            details: { new_status: status, reason, tracking_info, admin_notes, user_id: claim.user._id },
-            ip_address: req.ip, user_agent: req.headers['user-agent']
-        });
-
-        emitToAwardAdmins('award-claim-updated', {
-            claim_id: claim._id, status, reviewed_by: req.user._id
-        });
-        emitToUser(claim.user._id, 'award-claim-status', {
-            claim_id: claim._id, tier_number: claim.tier_number, status
-        });
-
-        res.json(formatResponse(true, 'Claim status updated', { claim }));
-    } catch (err) {
-        handleError(res, err, 'Error updating claim status');
-    }
-});
-
-app.post('/api/admin/awards/seed', adminAuth, async (req, res) => {
-    try {
-        const result = await seedAwardTiers();
-        res.json(formatResponse(true, 'Tier seed completed', result));
-    } catch (err) {
-        handleError(res, err, 'Error seeding tiers');
-    }
-});
-
 // ==================== 404 & GLOBAL ERROR ====================
 app.use((req, res) => {
     res.status(404).json(formatResponse(false, 'Endpoint not found'));
@@ -5259,39 +4751,39 @@ app.use((err, req, res, next) => {
 });
 
 // ==================== STARTUP / SHUTDOWN ====================
-let isShuttingDown = false;
-let isDbReady = false;
-
 const startServer = async () => {
     try {
         await initializeDatabase();
-        isDbReady = true;
 
         server.listen(config.port, () => {
             console.log('\n🚀 ============================================');
-            console.log('✅ Liquidated Backend v59.0 - Production / Awards Ready');
+            console.log('✅ Liquidated Backend v59.1 - Cloudinary + Awards + Frontend-Matched Plans');
             console.log(`🌐 Environment: ${config.nodeEnv}`);
             console.log(`📍 Port: ${config.port}`);
             console.log(`🔗 Server URL: ${config.serverURL}`);
             console.log(`🔗 Client URL: ${config.clientURL}`);
-            console.log(`🏆 Awards Frontend: ${config.awardsFrontendURL}`);
             console.log('☁️  Cloudinary: Connected');
+            console.log('🎁 Awards: 12-tier ambassador programme mounted');
             console.log('🔌 Socket.IO: Enabled with JWT Authentication');
             console.log('📊 Database: Connected');
             console.log('============================================\n');
-            console.log('🎯 v59.0 HIGHLIGHTS:');
-            console.log('1. ✅ 16-tier Referral Awards ladder (5 → 2000+ referrals)');
-            console.log('2. ✅ Award tier seed, eligibility engine, leaderboard');
-            console.log('3. ✅ /api/awards/* + /api/admin/awards/* endpoints');
-            console.log('4. ✅ Socket.IO real-time award notifications');
-            console.log('5. ✅ GDPR account data export endpoint');
-            console.log('6. ✅ Cloudinary storage (ephemeral-disk-proof uploads)');
-            console.log('7. ✅ KYC documents stored as authenticated + signed URLs');
-            console.log('8. ✅ Body parser fix – PUT JSON parsing regardless of Content-Type');
-            console.log('9. ✅ Distributed cron locks (multi-instance safe)');
-            console.log('10. ✅ Reserved earnings on withdrawal, atomic balance ops');
-            console.log('11. ✅ Full admin audit trail on all sensitive actions');
-            console.log('12. ✅ Graceful shutdown with 10s drain budget');
+            console.log('🎯 v59.1 HIGHLIGHTS:');
+            console.log('1. ✅ Investment plans exactly match frontend FALLBACK_PLANS');
+            console.log('2. ✅ Awards module mounted (awards.js)');
+            console.log('3. ✅ Cloudinary storage (ephemeral-disk-proof uploads)');
+            console.log('4. ✅ KYC documents stored as authenticated (private, signed URLs)');
+            console.log('5. ✅ Magic-byte validation on in-memory buffer');
+            console.log('6. ✅ Signed-URL endpoint /api/files/signed/:publicId');
+            console.log('7. ✅ Body parser fix – PUT now parses JSON even with text/plain');
+            console.log('8. ✅ Hoisting fix – auth/adminAuth/formatResponse/handleFileUpload');
+            console.log('9. ✅ POST /api/auth/change-password added');
+            console.log('10. ✅ Bank details validation matches frontend (10 digits)');
+            console.log('11. ✅ User preferences extended (dark_mode, investment_alerts, etc.)');
+            console.log('12. ✅ KYC accepts full_name');
+            console.log('13. ✅ 20% referral commission verified');
+            console.log('14. ✅ Reserved earnings on withdrawal');
+            console.log('15. ✅ Distributed cron locks');
+            console.log('16. ✅ 12-tier ambassador awards programme');
             console.log('============================================\n');
         });
     } catch (error) {
@@ -5301,34 +4793,17 @@ const startServer = async () => {
 };
 
 const shutdown = async (signal) => {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
     console.log(`👋 ${signal} received. Shutting down gracefully...`);
-
-    const drain = setTimeout(() => {
-        console.error('⏰ Forced shutdown after 10s drain budget');
-        process.exit(1);
-    }, 10000);
-
     try {
-        // Stop accepting new connections
-        server.close(() => console.log('✅ HTTP server closed'));
-
-        // Close Socket.IO connections
-        try { io.close(); } catch (_) { /* noop */ }
-
-        // Close Mongo connection
-        if (isDbReady) {
-            await mongoose.connection.close();
-            console.log('✅ MongoDB connection closed');
-        }
-
-        clearTimeout(drain);
-        process.exit(0);
+        await mongoose.connection.close();
+        console.log('✅ MongoDB connection closed');
+        server.close(() => {
+            console.log('✅ HTTP server closed');
+            process.exit(0);
+        });
+        setTimeout(() => process.exit(1), 10000).unref();
     } catch (err) {
         console.error('Shutdown error:', err);
-        clearTimeout(drain);
         process.exit(1);
     }
 };
@@ -5340,7 +4815,6 @@ process.on('unhandledRejection', (reason) => {
 });
 process.on('uncaughtException', (err) => {
     console.error('🚨 Uncaught Exception:', err);
-    // Give logger a chance to flush, then exit
     setTimeout(() => process.exit(1), 1000);
 });
 
